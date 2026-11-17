@@ -1,7 +1,7 @@
 # AI Geliştirme Döngüsü Sistemi — Tasarım Dokümanı (Spec)
 
 - **Tarih:** 2026-11-18
-- **Durum:** Tasarım onaylandı (6 bölüm bölüm onaylandı), uygulama planı bekleniyor
+- **Durum:** Spec onaylandı (2026-11-18, kullanıcı); uygulama planı yazılıyor
 - **Çalışma adı:** `devloop` *(placeholder — karar kutusu 9.3)*
 - **Ölçek:** Mimari (architectural) — yeni sistem, yeşil alan
 
@@ -217,7 +217,7 @@ Aspirasyon: sistem olgunlaşınca kendi değişikliklerini kendi pipeline'ıyla 
 
 | # | Karar | Önerilen varsayılan | Not |
 |---|---|---|---|
-| 9.1 | **İlk stack adapter** | TypeScript/Node.js | Kontrat stack-bağımsız olduğundan tasarımı etkilemez; kullanıcının gerçek ana yığınıyla değiştirilmesi beklenir |
+| 9.1 | **İlk stack adapter** | TypeScript/Node.js — **karar verildi (2026-11-18, kullanıcı varsayılanı onayladı)** | Kontrat stack-bağımsız olduğundan tasarımı etkilemez; ileride tek satırla değiştirilebilir |
 | 9.2 | **LLM provider varsayılanı** | Config ile; ilk adapter Anthropic | Gateway sayesinde mimari etkisi yok |
 | 9.3 | **Sistem adı** | `devloop` | Tek satır değişiklik |
 
