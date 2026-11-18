@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { AnthropicGateway, GatewayError } from '../../src/gateway/gateway.js';
 import { loadConfig } from '../../src/config/config.js';
 
+process.env.ANTHROPIC_API_KEY ??= 'test-key';
+
 const policy = loadConfig(process.cwd()).policy;
 const Schema = z.object({ answer: z.string() });
 const api = (text: string, status = 200) => new Response(JSON.stringify({ content: [{ type: 'text', text }], usage: { input_tokens: 100, output_tokens: 50 } }), { status });
