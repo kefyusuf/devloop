@@ -3,22 +3,12 @@ import { StaticGatesStage } from '../../src/pipeline/stages/staticGates.js';
 import { TestGateStage } from '../../src/pipeline/stages/testGate.js';
 import { SecretScanStage } from '../../src/pipeline/stages/secretScan.js';
 import { MutationStubStage } from '../../src/pipeline/stages/mutationStub.js';
-import { TypeScriptAdapter } from '../../src/adapters/typescript/index.js';
+import { TypeScriptAdapter, resolveBin } from '../../src/adapters/typescript/index.js';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createRequire } from 'node:module';
 import type { StackAdapter } from '../../src/adapters/types.js';
 import type { ReviewContext } from '../../src/contracts/review.js';
-
-// Controller-ruled: gerçek tsc entegrasyon testlerinde npx'in OS-temp bağımlılığı aşıılır —
-// doğrudan node.exe + devloop'un kendi node_modules'undaki typescript girdisi kullanılır.
-const realTscOverride = {
-  typecheck: {
-    cmd: process.execPath,
-    args: [createRequire(import.meta.url).resolve('typescript/bin/tsc'), '--noEmit', '--pretty', 'false'],
-  },
-} as const;
 
 const ctx = (diff = '', files: Array<{ path: string; content: string }> = []): ReviewContext => ({
   taskSpec: { id: 't', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
@@ -72,7 +62,7 @@ describe('TypeScriptAdapter gerçek koşum (gerçek araç zinciri — tsc)', () 
     const dir = mkdtempSync(join(tmpdir(), 'tsad-'));
     writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, skipLibCheck: true }, include: ['*.ts'] }));
     writeFileSync(join(dir, 'bad.ts'), 'const n: number = "yazı";\n');
-    const findings = await new TypeScriptAdapter(realTscOverride).typecheck(dir);
+    const findings = await new TypeScriptAdapter().typecheck(dir);
     expect(findings.length).toBeGreaterThan(0);
     expect(findings[0].severity).toBe('critical');
   });
@@ -80,6 +70,12 @@ describe('TypeScriptAdapter gerçek koşum (gerçek araç zinciri — tsc)', () 
     const dir = mkdtempSync(join(tmpdir(), 'tsok-'));
     writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, skipLibCheck: true }, include: ['*.ts'] }));
     writeFileSync(join(dir, 'ok.ts'), 'export const a: number = 1;\n');
-    expect(await new TypeScriptAdapter(realTscOverride).typecheck(dir)).toEqual([]);
+    expect(await new TypeScriptAdapter().typecheck(dir)).toEqual([]);
+  });
+  it('araç hiçbir yerde çözümlenemezse throw eder (sessiz pass yok — A6)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tsbin-'));
+    expect(resolveBin(dir, 'boyle-bir-paket-yok/bogus.js')).toBeNull();
+    // eslint devloop bağımlılığı değildir: temp repo'da da yok → iki aday da başarısız → adapter throw → stage 'error'
+    await expect(new TypeScriptAdapter().lint(dir)).rejects.toThrow();
   });
 });
