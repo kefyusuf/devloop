@@ -27,4 +27,8 @@ describe('TS adapter parser\'ları', () => {
     expect(parseEslintJson('bozuk-json')).toEqual([]); // JSON.parse throw etmez
     expect(parseTscOutput('').length).toBe(0);
   });
+  it('geçersiz eleman şekilli eslint JSON → güvenli davranış', () => {
+    expect(parseEslintJson('[null]')).toEqual([]);
+    expect(parseEslintJson('[{"filePath":"/x"}]')).toEqual([]);
+  });
 });

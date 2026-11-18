@@ -12,7 +12,8 @@ export function parseEslintJson(raw: string): Finding[] {
   let files: EslintFile[];
   try { files = JSON.parse(raw) as EslintFile[]; } catch { return []; }
   if (!Array.isArray(files)) return [];
-  return files.flatMap((file) => file.messages.map((m) => f({
+  return files.filter((x): x is EslintFile => !!x && typeof x === 'object' && Array.isArray(x.messages))
+    .flatMap((file) => file.messages.map((m) => f({
     stage: 'static-gates', category: 'lint',
     severity: m.severity === 2 ? 'required' : 'optional',
     confidence: 1, evidence: { file: rel(file.filePath), line: m.line },
