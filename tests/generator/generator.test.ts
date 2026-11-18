@@ -91,4 +91,12 @@ describe('applyArtifact güvenliği', () => {
     await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'link-dir/target/sub/evil.ts', content: 'x' }] })).rejects.toThrow();
     expect(existsSync(join(outsideDir, 'sub'))).toBe(false);
   });
+  it('asılı sembolik bağ hedefi reddedilir; bağ ötesine yazılmaz', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ap6-'));
+    const outsideDir = mkdtempSync(join(tmpdir(), 'ap6-out-'));
+    mkdirSync(join(dir, 'src'));
+    symlinkSync(join(outsideDir, 'not-yet.txt'), join(dir, 'src', 'dangle.ts'));
+    await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'src/dangle.ts', content: 'x' }] })).rejects.toThrow();
+    expect(existsSync(join(outsideDir, 'not-yet.txt'))).toBe(false);
+  });
 });

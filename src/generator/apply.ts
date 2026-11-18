@@ -20,8 +20,10 @@ export async function applyArtifact(repoPath: string, artifact: Artifact): Promi
       if (!existsSync(probe)) continue;
       if (lstatSync(probe).isSymbolicLink()) throw new Error(`Sembolik bağ hedefi reddedildi: ${file.path}`);
     }
-    if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
-      throw new Error(`Sembolik bağ hedefi reddedildi: ${file.path}`);
+    try {
+      if (lstatSync(target).isSymbolicLink()) throw new Error(`Sembolik bağ hedefi reddedildi: ${file.path}`);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; // ENOENT = hedef yok, normal yol
     }
     const parent = dirname(target);
     mkdirSync(parent, { recursive: true });
