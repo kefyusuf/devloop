@@ -33,18 +33,23 @@ export class LlmReviewerStage implements ReviewStage {
 
   async evaluate(ctx: ReviewContext): Promise<StageResult> {
     const t0 = Date.now();
-    const system = RUBRIC + (this.reviewerLessons ? `\n\nGEÇMİŞ İNSAN KARARLARINDAN DERSLER (bunlara uy):\n${this.reviewerLessons.reviewerContext()}` : '');
-    const user = [
-      `GÖREV: ${ctx.taskSpec.description}`, `KABUL KRİTERLERİ: ${ctx.taskSpec.acceptanceCriteria.join('; ')}`,
-      `INTENT: ${ctx.artifact.intent}`, `REDDEDİLEN ALTERNATİFLER: ${ctx.artifact.rejectedAlternatives.join('; ') || '-'}`,
-      `TEST KANITI: ${ctx.artifact.testEvidence || '-'}`, `RİSK SKORU: ${ctx.riskScore}`,
-      `DIFF:\n${ctx.artifact.diff}`,
-    ].join('\n\n');
-    const { data } = await this.gateway.complete({ system, user, schema: ReviewerOutput, runId: ctx.taskSpec.id });
-    const findings: Finding[] = data.findings.map((r) => ({
-      id: randomUUID(), stage: this.name, category: r.category, severity: r.severity,
-      confidence: r.confidence, evidence: { file: r.file, line: r.line }, suggestion: r.suggestion,
-    }));
-    return { status: 'pass', findings, durationMs: Date.now() - t0 }; // advisory: asla fail değil
+    try {
+      const system = RUBRIC + (this.reviewerLessons ? `\n\nGEÇMİŞ İNSAN KARARLARINDAN DERSLER (bunlara uy):\n${this.reviewerLessons.reviewerContext()}` : '');
+      const user = [
+        `GÖREV: ${ctx.taskSpec.description}`, `KABUL KRİTERLERİ: ${ctx.taskSpec.acceptanceCriteria.join('; ')}`,
+        `INTENT: ${ctx.artifact.intent}`, `REDDEDİLEN ALTERNATİFLER: ${ctx.artifact.rejectedAlternatives.join('; ') || '-'}`,
+        `TEST KANITI: ${ctx.artifact.testEvidence || '-'}`, `RİSK SKORU: ${ctx.riskScore}`,
+        `DIFF:\n${ctx.artifact.diff}`,
+      ].join('\n\n');
+      const { data } = await this.gateway.complete({ system, user, schema: ReviewerOutput, runId: ctx.taskSpec.id });
+      const findings: Finding[] = data.findings.map((r) => ({
+        id: randomUUID(), stage: this.name, category: r.category, severity: r.severity,
+        confidence: r.confidence, evidence: { file: r.file, line: r.line }, suggestion: r.suggestion,
+      }));
+      return { status: 'pass', findings, durationMs: Date.now() - t0 }; // advisory: asla fail değil
+    } catch (e) {
+      // Gateway hatası (ağ/API/şema) → 'error' statüsü; advisory reject etmez, PR bu koşuda LLM bulgusuz çıkar.
+      return { status: 'error', findings: [], durationMs: Date.now() - t0, errorMessage: String(e) };
+    }
   }
 }

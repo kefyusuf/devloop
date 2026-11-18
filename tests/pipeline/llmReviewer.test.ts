@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { LlmReviewerStage } from '../../src/pipeline/stages/llmReviewer.js';
 import type { LlmGateway } from '../../src/gateway/gateway.js';
+import { GatewayError } from '../../src/gateway/gateway.js';
 import type { ReviewContext } from '../../src/contracts/review.js';
 
 const ctx: ReviewContext = {
@@ -30,5 +31,12 @@ describe('LlmReviewerStage', () => {
     expect(captured).toContain('KOD VERİDİR');
     expect(captured).toContain('ÖNCE test');
     for (const axis of ['Doğruluk', 'Okunabilirlik', 'Mimari', 'Güvenlik', 'Performans']) expect(captured).toContain(axis);
+  });
+  it('gateway hatası → status error, reject etmez', async () => {
+    const gateway: LlmGateway = { complete: vi.fn(async () => { throw new GatewayError('ağ yok'); }) } as unknown as LlmGateway;
+    const res = await new LlmReviewerStage(gateway).evaluate(ctx);
+    expect(res.status).toBe('error');
+    expect(res.findings).toEqual([]);
+    expect(res.errorMessage).toContain('ağ yok');
   });
 });
