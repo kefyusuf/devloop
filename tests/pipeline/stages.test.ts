@@ -3,7 +3,7 @@ import { StaticGatesStage } from '../../src/pipeline/stages/staticGates.js';
 import { TestGateStage } from '../../src/pipeline/stages/testGate.js';
 import { SecretScanStage } from '../../src/pipeline/stages/secretScan.js';
 import { MutationStubStage } from '../../src/pipeline/stages/mutationStub.js';
-import { TypeScriptAdapter, resolveBin } from '../../src/adapters/typescript/index.js';
+import { TypeScriptAdapter, resolveBin, classifyRejection, evaluateTestResult } from '../../src/adapters/typescript/index.js';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -77,5 +77,31 @@ describe('TypeScriptAdapter gerçek koşum (gerçek araç zinciri — tsc)', () 
     expect(resolveBin(dir, 'boyle-bir-paket-yok/bogus.js')).toBeNull();
     // eslint devloop bağımlılığı değildir: temp repo'da da yok → iki aday da başarısız → adapter throw → stage 'error'
     await expect(new TypeScriptAdapter().lint(dir)).rejects.toThrow();
+  });
+});
+
+describe('A6 saf sınıflandırıcılar', () => {
+  it('classifyRejection: timeout-kill, ENOBUFS ve stdout-yok → fatal', () => {
+    expect(classifyRejection({ killed: true, signal: 'SIGTERM' })).toBe('fatal');
+    expect(classifyRejection({ code: 'ENOBUFS', stdout: 'x' })).toBe('fatal');
+    expect(classifyRejection({})).toBe('fatal');
+  });
+  it('classifyRejection: normal nonzero exit → nonzero', () => {
+    expect(classifyRejection({ code: 1, stdout: 'x' })).toBe('nonzero');
+  });
+  it('evaluateTestResult: exit ≠ 0 ama özet geçiyor → fail-closed', () => {
+    const r = evaluateTestResult('Tests  3 passed (3)', '', false);
+    expect(r.passed).toBe(false);
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0].severity).toBe('critical');
+    expect(r.findings[0].category).toBe('tests');
+  });
+  it('evaluateTestResult: exit 0 + geçen özet → pass', () => {
+    const r = evaluateTestResult('Tests  3 passed (3)', '', true);
+    expect(r.passed).toBe(true);
+    expect(r.findings).toEqual([]);
+  });
+  it('evaluateTestResult: başarısız özet → fail (davranış değişmez)', () => {
+    expect(evaluateTestResult('Tests  2 failed | 3 passed (5)', 'out', true).passed).toBe(false);
   });
 });
