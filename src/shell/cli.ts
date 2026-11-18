@@ -6,6 +6,7 @@ import { VerdictStore, validateChain } from '../store/store.js';
 import { AnthropicGateway } from '../gateway/gateway.js';
 import { LlmGeneratorBackend } from '../generator/generator.js';
 import { LessonMemory } from '../memory/memory.js';
+import { generateCandidates, confirmCandidate } from '../learning/learn.js';
 import { Orchestrator } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
 import { ReviewPipeline } from '../pipeline/pipeline.js';
@@ -67,27 +68,15 @@ export function buildCli(workDir = process.cwd()): Command {
 
   const learn = program.command('learn').description('aday dersleri listele/onayla');
   learn.action(async () => {
-    // Not: learn modülü Aşama 4 (Task 14) ile gelir — lazy import (statik import Task 14'te dönüştürülür).
-    // Belirteç birleşimi: modül henüz yokken tsc'nin statik çözümlemesi (TS2307) devre dışı kalır;
-    // aday şekli brief'in listeleme şablonundan (Task 14 gerçek tipleri getirir).
-    const learnMod = await import('../learning/' + 'learn.js') as {
-      generateCandidates(store: VerdictStore): Array<{ lessonId: string; pattern: string; targetComponent: string; rule: string }>;
-      confirmCandidate(store: VerdictStore, mem: LessonMemory, candidate: { lessonId: string }): Promise<void>;
-    };
-    const candidates = learnMod.generateCandidates(store());
+    const candidates = generateCandidates(store());
     console.log(candidates.map((c) => `${c.lessonId}  [${c.pattern}→${c.targetComponent}]  ${c.rule}`).join('\n') || '(aday yok)');
   });
   learn.command('confirm').argument('<lessonId>').action(async (lessonId: string) => {
-    // Not: learn modülü Aşama 4 (Task 14) ile gelir — lazy import (statik import Task 14'te dönüştürülür).
-    const learnMod = await import('../learning/' + 'learn.js') as {
-      generateCandidates(store: VerdictStore): Array<{ lessonId: string; pattern: string; targetComponent: string; rule: string }>;
-      confirmCandidate(store: VerdictStore, mem: LessonMemory, candidate: { lessonId: string }): Promise<void>;
-    };
     const s = store();
-    const c = learnMod.generateCandidates(s).find((x) => x.lessonId === lessonId);
+    const c = generateCandidates(s).find((x) => x.lessonId === lessonId);
     if (!c) throw new Error('Aday bulunamadı');
     const mem = memory();
-    await learnMod.confirmCandidate(s, mem, c);
+    await confirmCandidate(s, mem, c);
     console.log('Aktif edildi + render edildi.');
   });
   learn.command('reject').argument('<lessonId>').action(async (lessonId: string) => {
