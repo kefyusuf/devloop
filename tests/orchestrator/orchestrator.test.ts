@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import type { StageResult, ReviewContext } from '../../src/contracts/review.js';
+import type { StageResult } from '../../src/contracts/review.js';
 import type { Finding, Artifact } from '../../src/contracts/schemas.js';
 import type { LlmGateway, TokenUsage } from '../../src/gateway/gateway.js';
 
@@ -18,7 +18,8 @@ const policy = { ...base, gates: ['static-gates'], advisory: [], maxFixTours: 3,
 function initRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'repo-'));
   writeFileSync(join(dir, 'README.md'), '# fixture\n');
-  execSync('git init -b main && git add . && git commit -m init && git config user.email t@t && git config user.name t', { cwd: dir });
+  // Fix round 3: kimlik config'i commit'ten ÖNCE — global git identity'siz CI'da fixture kurulur.
+  execSync('git init -b main && git config user.email t@t && git config user.name t && git add . && git commit -m init', { cwd: dir });
   return dir;
 }
 const tasksFile = (dir: string, tasks: unknown[]) => { const f = join(dir, 'tasks.json'); writeFileSync(f, JSON.stringify(tasks)); return f; };
@@ -102,8 +103,9 @@ describe('Orchestrator', () => {
 
   it('resume: TaskPicked var PRCreated yok → tamamlar; TaskBlocked tekrar işlenmez', async () => {
     const repo = initRepo();
+    execSync('git branch devloop/task-1', { cwd: repo }); // Fix round 1: çöken önceki koşumun bıraktığı stale branch
     const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
-    await store.append('RunStarted', 'run-x', '-', 'o', { configSnapshot: { policyHash: 'h' } });
+    await store.append('RunStarted', 'run-x', '-', 'o', { configSnapshot: { policyHash: createHash('sha256').update(JSON.stringify(policy)).digest('hex').slice(0, 16) } });
     await store.append('TaskPicked', 'run-x', 'task-1', 'o', { taskSpec: { id: 'task-1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] } });
     await store.append('TaskBlocked', 'run-x', 'task-2', 'o', { reason: 'gate-fail' });
     const backend = fakeBackend();
