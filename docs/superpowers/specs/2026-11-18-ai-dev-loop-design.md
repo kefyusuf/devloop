@@ -232,3 +232,63 @@ Aspirasyon: sistem olgunlaşınca kendi değişikliklerini kendi pipeline'ıyla 
 
 - Osmani: [Self-Improving Coding Agents](https://addyosmani.com/blog/self-improving-agents), [Agentic Code Review](https://addyosmani.com/blog/agentic-code-review), [agent-skills](https://github.com/addyosmani/agent-skills), [Agentic Skill Decay](https://addyosmani.com/blog/agentic-skill-decay)
 - Akademik: [Reflexion](https://arxiv.org/abs/2303.11366), [Self-Refine](https://arxiv.org/abs/2303.17651), [When Can LLMs Actually Correct Their Own Mistakes?](https://arxiv.org/html/2406.01297v3), [Self-Evolving Agents Survey](https://arxiv.org/abs/2507.21046), [SICA](https://arxiv.org/html/2504.15228v1), [Darwin Gödel Machine](https://sakana.ai/dgm), [AI Slop and the Software Commons](https://arxiv.org/abs/2604.16754), [Circuit Breaker PR triajı](https://arxiv.org/html/2601.00753v2), [reward hacking survey](https://link.springer.com/article/10.1007/s44163-026-01980-z)
+
+---
+
+## Revizyon 1 — İnceleme Temelli Düzeltmeler (2026-11-18, v1.1)
+
+Bağımsız inceleme (Codex, 2026-11-18) planın kod taslaklarında v1 çalışma sözleşmesini bozan P0 bulgular tespit etti. D1–D6 **değişmedi**; aşağıdaki sözleşmeler sertleştirildi.
+
+### A1 — Generator iki arayüze ayrılır (D4 netleştirmesi)
+
+- **`LlmGateway`**: yalnız çıkarım hizmeti (Anthropic/OpenAI/yerel). Sağlayıcı değişimi burada.
+- **`GeneratorBackend`**: kod üreten agent arayüzü (`generate(task, ctx, feedback) → Artifact`). V1 implementasyonu `LlmGeneratorBackend` — **sınırlandırılmış repo okuma** içerir (dosya ağacı + `filesScope` ile eşleşen dosya içerikleri, dosya/bayt limitli). İleride Claude Code/Codex/OpenCode backend'leri bu arayüzle eklenir; değerlendirme standardı değişmez.
+
+### A2 — Kapı mantığı fail-closed (D3 netleştirmesi)
+
+- `StageResult.status` artık `pass | fail | error | skipped`.
+- Gate **error** → görev başarısız; sessiz `pass` yok. Gate **skipped** → yalnızca `policy.authorizedSkips` içinde açıkça yetkiliyse geçer, aksi halde fail.
+- Politikada adı geçip implementasyonu olmayan stage → `PipelineConfigError` (sessiz atlama yok).
+- `PASS` yalnızca tüm zorunlu gate'lerin gerçek `pass` sonucuyla oluşur; `gateFailed` varken commit/PR asla oluşmaz.
+
+### A3 — Event bütünlüğü (D6 netleştirmesi)
+
+- `DevloopEvent` payload'ları tip güvenli diskrimine union; `unknown` erişim yok.
+- `validateChain(events)`: tüm `parent*EventId` referanslarının varlığı doğrulanır (nedensel bütünlük).
+- Append idempotency: `idempotencyKey` alanı — aynı anahtarlı event yeniden yazılmaz.
+- Bozuk/kısmi satır: okumada atılır (bilinen, testli kural); yazmada katı doğrulama.
+- Yeni event: `TaskBlocked` (gate tükendi → görev bloke; resume bunu tekrar işlemez).
+- `PRCreated` alanları genişletildi: `commitSha`, `diffDigest` (SHA-256) — PR doğrulanmış artifact'e kriptografik bağlı.
+- `RunStarted.configSnapshot` içinde `policyHash` (politikanın SHA-256 özeti) — politika sürümü kanıta sabitlenir.
+
+### A4 — Hafıza hedef bileşen ayrımı (D3/L1 netleştirmesi)
+
+- `LessonLearned` yeni alan: `targetComponent: 'generator' | 'reviewer'`.
+- LessonMemory iki okuma verir: `contextFor(task)` (generator dersleri) ve `reviewerContext()` (reviewer dersleri). Reviewer'a ait ders artık Generator'a akmaz.
+- Aday ders kimliği, parent karar event ID'lerinden **deterministik** türetilir (SHA-256) — `learn` ile `learn confirm` aynı ID'yi görür.
+
+### A5 — V1 güvenlik sınırı açıkça tanımlı
+
+- **V1 güvenilirlik sınırı: "trusted repositories only".** Worktree kaynak izolasyonudur, sandbox değildir; container izolasyonu faz 2'dir ve bu bilinçli bir sınırdır.
+- Komut yürütme: sabit executable listesi (eslint/tsc/vitest), shell yok, timeout ve çıktı limiti ile.
+- `applyArtifact`: path canonicalization + symlink denetimi (repo dışına yazma yok, `..` reddi).
+- Sırlar: agent ve test süreçlerine gereksiz env aktarılmaz; anahtar yalnız Gateway'de.
+- Politika agent tarafından değiştirilemez; hash ile koşum kanıtına sabitlenir (A3).
+- PR yetkisi: oluşturma var, merge yok; hedef repoda branch protection + zorunlu status check önerilir (dış doğrulama).
+
+### A6 — Değişmez kural sözleşmesi (v1 kabul kriterleri)
+
+Test sayısı değil, şu değişmezler kanıtlanır (her biri için test zorunlu — plan v2 `tests/e2e/invariants.test.ts`):
+
+| Değişmez | Kanıt |
+|---|---|
+| `PASS` yalnız başarılı zorunlu gate'lerden çıkar | Her gate durumu (pass/fail/error/skipped) için test |
+| `PRCreated` doğrulanmış artifact'e bağlı | commitSha + diffDigest + stage sonuçları testi |
+| Resume tamamlanan işi tekrar üretmez | Crash/restart entegrasyon testi |
+| `HumanDecision` gerçek bulguya bağlı | parent ID validation testi |
+| `LessonLearned(active)` insan onayı gerektirir | Event zinciri testi |
+| Bütçe durdurma gerçek gateway kullanımıyla işler | Çok çağrılı maliyet testi |
+| Yeni dosyalar diff kanıtında görünür | Untracked-file fixture testi |
+| Başarısız komut asla sessiz `pass` olmaz | Exit code / timeout / malformed-output testleri |
+
+E2E'de mock orkestrasyonu doğrular; en az bir **gerçek araç zinciri** entegrasyon testi (gerçek `tsc` koşumu) zorunlu.
