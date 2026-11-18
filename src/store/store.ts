@@ -1,9 +1,27 @@
-import { appendFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, mkdirSync, openSync, readSync, fstatSync, closeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DevloopEventSchema, makeEnvelope, type DevloopEvent, type EventPayloadMap, type EventType } from '../contracts/events.js';
 
 export class VerdictStore {
   constructor(private readonly logPath: string) {}
+
+  /** Kuyruk güvenli mi? Dosya yoksa/boşsa true; son bayt '\n' değilse (yırtık yazım) false. Tail okunamıyorsa false — guard'ı tetikle (kayıpsız yazım). */
+  private tailIsClean(): boolean {
+    if (!existsSync(this.logPath)) return true;
+    let fd: number | undefined;
+    try {
+      fd = openSync(this.logPath, 'r');
+      const size = fstatSync(fd).size;
+      if (size === 0) return true;
+      const buf = Buffer.alloc(1);
+      readSync(fd, buf, 0, 1, size - 1); // yalnız son 1 bayt — tüm dosyayı okumadan
+      return buf[0] === 0x0a;
+    } catch {
+      return false;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+  }
 
   async append<K extends EventType>(
     type: K, runId: string, taskId: string, actor: string,
@@ -16,7 +34,10 @@ export class VerdictStore {
     const candidate = { ...makeEnvelope(runId, taskId, actor, idempotencyKey), type, payload };
     const ev = DevloopEventSchema.parse(candidate); // yazmada katı
     mkdirSync(dirname(this.logPath), { recursive: true });
-    appendFileSync(this.logPath, JSON.stringify(ev) + '\n', 'utf8');
+    // Yırtık kuyruk guard'ı: önceki yazım yarıda kaldiysa (newline'sız fragman),
+    // yeni event fragmana yapışıp İKİSİNİN de okunamaz olmasını engelle (A3 — kayıpsız resume).
+    const data = (this.tailIsClean() ? '' : '\n') + JSON.stringify(ev) + '\n';
+    appendFileSync(this.logPath, data, 'utf8');
     return ev;
   }
 

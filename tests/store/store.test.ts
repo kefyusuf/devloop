@@ -33,6 +33,16 @@ describe('VerdictStore', () => {
     expect(s.readAll()).toHaveLength(1);
   });
 
+  it('yırtık kuyruk (newline yok): yeni append sağlam satırı korur, kayıpsız resume', async () => {
+    const p = join(mkdtempSync(join(tmpdir(), 'ds-')), 'events.jsonl');
+    const s = new VerdictStore(p);
+    writeFileSync(p, '{"event_id":"torn"'); // torn tail — trailing newline YOK
+    await s.append('RunStarted', 'r1', 't1', 'o', { configSnapshot: {} });
+    expect(s.readAll()).toHaveLength(1); // fragment atılır, YENİ event okunur
+    await s.append('TaskPicked', 'r1', 't1', 'o', { taskSpec });
+    expect(s.readAll()).toHaveLength(2); // ikinci append de temiz sınırda
+  });
+
   it('validateChain: eksik parent yakalanır; sağlam zincir ok der', async () => {
     const s = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'ds-')), 'events.jsonl'));
     const run = await s.append('RunStarted', 'r1', 't1', 'o', { configSnapshot: {} });
