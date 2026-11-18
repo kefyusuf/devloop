@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { LlmGeneratorBackend, readRepoContext } from '../../src/generator/generator.js';
 import { applyArtifact } from '../../src/generator/apply.js';
-import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LlmGateway } from '../../src/gateway/gateway.js';
@@ -73,5 +73,22 @@ describe('applyArtifact güvenliği', () => {
     mkdirSync(join(dir, 'link-dir'));
     symlinkSync(outside, join(dir, 'link-dir', 'target'));
     await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'link-dir/target/evil.ts', content: 'x' }] })).rejects.toThrow();
+  });
+  it('hedef dosyanın kendisi sembolik bağ ise reddedilir', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ap4-'));
+    const outsideDir = mkdtempSync(join(tmpdir(), 'ap4-out-'));
+    const outsideFile = join(outsideDir, 'real.ts');
+    writeFileSync(outsideFile, 'real');
+    mkdirSync(join(dir, 'src'));
+    symlinkSync(outsideFile, join(dir, 'src', 'evil.ts'));
+    await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'src/evil.ts', content: 'x' }] })).rejects.toThrow();
+  });
+  it('derin sembolik bağ reddedilir; bağ ötesinde dizin oluşturulmaz', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ap5-'));
+    const outsideDir = mkdtempSync(join(tmpdir(), 'ap5-out-'));
+    mkdirSync(join(dir, 'link-dir'));
+    symlinkSync(outsideDir, join(dir, 'link-dir', 'target'));
+    await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'link-dir/target/sub/evil.ts', content: 'x' }] })).rejects.toThrow();
+    expect(existsSync(join(outsideDir, 'sub'))).toBe(false);
   });
 });

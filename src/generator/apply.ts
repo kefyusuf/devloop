@@ -12,13 +12,18 @@ export async function applyArtifact(repoPath: string, artifact: Artifact): Promi
     if (relFromRoot.startsWith('..') || isAbsolute(relFromRoot)) {
       throw new Error(`Yol kaçışı reddedildi: ${file.path}`);
     }
-    const parent = dirname(target);
-    let probe = parent;
-    while (probe !== root && !existsSync(probe)) probe = dirname(probe); // var olan en yakın ata
-    if (existsSync(probe)) {
-      const st = lstatSync(probe);
-      if (st.isSymbolicLink()) throw new Error(`Sembolik bağ hedefi reddedildi: ${file.path}`);
+    // A5: yazma öncesi — var olan her ata segmenti kök içinde kalmalı (symlink kaçışı yok)
+    let probe = root;
+    const segments = relFromRoot.split(/[\\/]/).filter(Boolean).slice(0, -1); // parent segmentleri
+    for (const seg of segments) {
+      probe = join(probe, seg);
+      if (!existsSync(probe)) continue;
+      if (lstatSync(probe).isSymbolicLink()) throw new Error(`Sembolik bağ hedefi reddedildi: ${file.path}`);
     }
+    if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+      throw new Error(`Sembolik bağ hedefi reddedildi: ${file.path}`);
+    }
+    const parent = dirname(target);
     mkdirSync(parent, { recursive: true });
     writeFileSync(target, file.content, 'utf8');
   }
