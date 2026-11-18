@@ -20,7 +20,7 @@ devloop status
 - Her koşum git worktree + feature branch'te; main'e asla yazmaz.
 - Bütçe `budgetUsd` koşum (run) başınadır; resume yeni bütçe alır (per-run hüküm).
 - Deterministik gate'ler (lint/tip/test/sırr) tartışmasız; LLM bulguları advisory — merge kararı her zaman insanda.
-- Tüm koşumlar `<repo>/.devloop/events/*.jsonl`'e append-only kanıt zinciriyle iner.
+- Tüm koşumlar `<repo>/.devloop/events.jsonl` dosyasına append-only kanıt zinciriyle iner.
 
 ## Güvenlik sınırı (v1)
 - **Trusted repositories only.** Worktree kaynak izolasyonudur, sandbox değildir; güvenilmeyen repo koşullandırılmaz (container izolasyonu faz 2).

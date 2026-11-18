@@ -56,6 +56,7 @@ describe('E2E golden koşu (A6 değişmezleri)', () => {
 
     const pr = events.find((e) => e.type === 'PRCreated')!.payload;
     expect(pr.commitSha).not.toBeNull();
+    expect(pr.commitSha).toMatch(/^[0-9a-f]{40}$/);
     // Düzeltme 3: digest sha256(KAYITLI ArtifactProduced.diff) — fixture sabiti NEW_FILE.diff DEĞİL.
     const recorded = events.find((e) => e.type === 'ArtifactProduced')!.payload.artifact;
     expect(recorded.diff.length).toBeGreaterThan(0);
