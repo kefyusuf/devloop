@@ -28,4 +28,15 @@ describe('AnthropicGateway', () => {
     const g = new AnthropicGateway(policy, vi.fn().mockResolvedValue(api('x', 500)) as typeof fetch);
     await expect(g.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
   });
+  it('ağ hatası → GatewayError (ham TypeError değil)', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const g = new AnthropicGateway(policy, fetchMock as typeof fetch);
+    await expect(g.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
+    expect(fetchMock).toHaveBeenCalledTimes(6); // 2 model × (2 retry + 1)
+  });
+  it('transport hatası → retry → başarı', async () => {
+    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError('fetch failed')).mockResolvedValueOnce(api('{"answer":"ok"}'));
+    const g = new AnthropicGateway(policy, fetchMock as typeof fetch);
+    expect((await g.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).data.answer).toBe('ok');
+  });
 });
