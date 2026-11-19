@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import type { StageResult } from '../../src/contracts/review.js';
 import type { Finding, Artifact } from '../../src/contracts/schemas.js';
 import type { LlmGateway, TokenUsage } from '../../src/gateway/gateway.js';
+import { GatewayError } from '../../src/gateway/gateway.js';
 
 const base = loadConfig(process.cwd()).policy;
 const policy = { ...base, gates: ['static-gates'], advisory: [], maxFixTours: 3, budgetUsd: 2.0 };
@@ -111,6 +112,39 @@ describe('Orchestrator', () => {
     const bg = new BudgetedGateway(inner, 2.0, () => {});
     await bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' }); // 1.5
     await expect(bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' })).rejects.toThrow('Bütçe'); // 1.5+1.5=3.0 > 2.0 sonrası
+  });
+
+  it('GatewayError → run-level suspend (panic); TaskBlocked spam yok, kalan görev listesi yanmaz (I5)', async () => {
+    const repo = initRepo();
+    const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
+    // hüküm (final review I1): gateway hatası backend'in generate'ının içinden gelir (canary yok) —
+    // fake backend gerçek harcayan gibi gateway'i çağırır.
+    const deadGateway: LlmGateway = { complete: vi.fn(async () => { throw new GatewayError('ağ yok'); }) };
+    const backend = gatewayCallingBackend(deadGateway);
+    const summary = await new Orchestrator(deps(repo, store, { gateway: deadGateway, backend })).run(tasksFile(repo, [
+      { id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      { id: 't2', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+    ]));
+    expect(summary.aborted).toBe('panic');
+    expect(summary.blocked).toEqual([]);
+    expect(summary.prs).toHaveLength(0);
+    const aborted = store.query({ type: 'RunAborted' });
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0].payload.reason).toBe('panic');
+    expect(store.query({ type: 'TaskBlocked' })).toHaveLength(0);
+    expect(backend.generate).toHaveBeenCalledTimes(1); // t2 işaretlenmedi → resume'da yeniden denenir
+  });
+
+  it('StageVerdict: errorMessage kanıta taşınır + artifact parent bağlanır (I5/I6)', async () => {
+    const repo = initRepo();
+    const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
+    const errPipeline = () => new ReviewPipeline([{ name: 'static-gates', kind: 'gate' as const, evaluate: async (): Promise<StageResult> => ({ status: 'error', findings: [], durationMs: 1, errorMessage: 'eslint patladı' }) }], policy);
+    await new Orchestrator(deps(repo, store, { pipeline: errPipeline() })).run(tasksFile(repo, [{ id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] }]));
+    const verdict = store.query({ type: 'StageVerdict' })[0].payload;
+    expect(verdict.errorMessage).toBe('eslint patladı');
+    const art = store.query({ type: 'ArtifactProduced' })[0];
+    expect(verdict.parentArtifactEventId).toBe(art.event_id);
+    expect(validateChain(store.readAll()).ok).toBe(true);
   });
 
   it('resume: TaskPicked var PRCreated yok → tamamlar; TaskBlocked tekrar işlenmez', async () => {

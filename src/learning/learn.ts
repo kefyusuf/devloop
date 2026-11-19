@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { VerdictStore } from '../store/store.js';
 import type { LessonMemory } from '../memory/memory.js';
+import type { EventPayloadMap } from '../contracts/events.js';
 
 export interface CandidateLesson {
   lessonId: string; rule: string; scope: string; confidence: number;
@@ -45,7 +46,16 @@ export function generateCandidates(store: VerdictStore): CandidateLesson[] {
         scope: 'review-rubric', confidence: 0.8, parentDecisionEventIds: b.decisionIds });
     }
   }
-  return out;
+  // I4 (final review): retire edilmiş ders ID'leri aday listesine dönmez — lessonId deterministik
+  // olduğundan aynı karar seti tombstone yazıldıktan sonra da AYNI ID'yi üretir; LessonMemory ile
+  // aynı projeksiyon (lessonId başına SON status kazanır) üzerinden retired kümesi filtreler.
+  const latestLesson = new Map<string, EventPayloadMap['LessonLearned']>();
+  for (const ev of store.query({ type: 'LessonLearned' })) {
+    if (ev.type !== 'LessonLearned') continue; // union daraltma (strict tsc)
+    latestLesson.set(ev.payload.lessonId, ev.payload);
+  }
+  const retiredIds = new Set([...latestLesson.values()].filter((l) => l.status === 'retired').map((l) => l.lessonId));
+  return out.filter((c) => !retiredIds.has(c.lessonId));
 }
 
 export async function confirmCandidate(store: VerdictStore, memory: LessonMemory, c: CandidateLesson) {

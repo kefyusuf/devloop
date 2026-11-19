@@ -83,7 +83,25 @@ export function buildCli(workDir = process.cwd()): Command {
     console.log('Aktif edildi + render edildi.');
   });
   learn.command('reject').argument('<lessonId>').action(async (lessonId: string) => {
-    await memory().markRetired(lessonId, []);
+    const s = store();
+    const mem = memory();
+    // I4 (final review): ret için iki yol — (1) ID bir CANDIDATE ise tombstone yaz (retired
+    // LessonLearned; rule/scope/confidence adaydan türetilir, deterministik ID retired filtresiyle
+    // yeniden listelenmez), (2) aktif ders ise mevcut markRetired yolu; ikisi de değilse hata.
+    const candidate = generateCandidates(s).find((x) => x.lessonId === lessonId);
+    if (candidate) {
+      await mem.appendLesson({
+        lessonId: candidate.lessonId, rule: candidate.rule, scope: candidate.scope,
+        confidence: candidate.confidence, status: 'retired', targetComponent: candidate.targetComponent,
+        parentDecisionEventIds: [],
+      });
+      await mem.render();
+      console.log('Aday reddedildi (tombstone yazıldı).');
+      return;
+    }
+    const isActive = s.query({ type: 'LessonLearned' }).some((e) => e.type === 'LessonLearned' && e.payload.lessonId === lessonId && e.payload.status === 'active');
+    if (!isActive) throw new Error('Aday veya aktif ders bulunamadı');
+    await mem.markRetired(lessonId, []);
     console.log('Retired.');
   });
 

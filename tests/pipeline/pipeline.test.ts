@@ -30,6 +30,16 @@ describe('ReviewPipeline fail-closed', () => {
     const p = new ReviewPipeline([stage('static-gates', 'gate', 'error'), stage('tests', 'gate', 'pass'), stage('llm-reviewer', 'advisory', 'pass')], policy);
     expect((await p.run(ctx)).gateFailed).toBe('static-gates');
   });
+  it('stage hata mesajı verdict\'e taşınır (I5 — kanıt zinciri diagnoz edilebilir)', async () => {
+    const errStage: ReviewStage = { name: 'static-gates', kind: 'gate', evaluate: vi.fn(async () => ({ status: 'error', findings: [], durationMs: 2, errorMessage: 'eslint patladı' })) };
+    const r = await new ReviewPipeline([errStage], { ...policy, gates: ['static-gates'], advisory: [] }).run(ctx);
+    expect(r.verdicts[0].errorMessage).toBe('eslint patladı');
+    expect(r.verdicts[0].status).toBe('error');
+  });
+  it('hata olmayan stage verdict\'inde errorMessage yok (I5 — alan yalnız varsa yazılır)', async () => {
+    const r = await new ReviewPipeline([stage('static-gates', 'gate', 'pass')], { ...policy, gates: ['static-gates'], advisory: [] }).run(ctx);
+    expect(r.verdicts[0].errorMessage).toBeUndefined();
+  });
   it('yetkisiz skip → fail', async () => {
     const p = new ReviewPipeline([stage('static-gates', 'gate', 'skipped'), stage('tests', 'gate', 'pass'), stage('llm-reviewer', 'advisory', 'pass')], policy);
     expect((await p.run(ctx)).gateFailed).toBe('static-gates');

@@ -10,6 +10,7 @@ import { readRepoContext } from '../generator/generator.js';
 import { applyArtifact } from '../generator/apply.js';
 import type { ReviewPipeline, PipelineResult } from '../pipeline/pipeline.js';
 import type { LlmGateway, TokenUsage } from '../gateway/gateway.js';
+import { GatewayError } from '../gateway/gateway.js';
 import type { Policy } from '../config/config.js';
 import type { ReviewContext } from '../contracts/review.js';
 import { TaskSpecSchema, type TaskSpec, type Artifact, type Finding } from '../contracts/schemas.js';
@@ -122,6 +123,12 @@ export class Orchestrator {
           // bütçe → run-level semantik korunur (kill/wallclock döngü-topunda zaten run-level).
           await store.append('RunAborted', runId, task.id, 'orchestrator', { reason: 'budget' });
           summary.aborted = 'budget';
+        } else if (e instanceof GatewayError) {
+          // I5 (final review, spec §7.4): gateway/altyapı hatası (ağ/API) görev-düzeyi blok DEĞİL —
+          // run-level suspend (panic): resume edilebilir, kalan görev listesi yanmaz (done setine
+          // TaskBlocked/PRCreated yazılmaz); TaskBlocked spam'i oluşmaz.
+          await store.append('RunAborted', runId, task.id, 'orchestrator', { reason: 'panic' });
+          summary.aborted = 'panic';
         } else {
           // Fix round 1 (Important): görev düzeyi izolasyon — git arızası tüm koşumu düşürmez.
           const msg = (e instanceof Error ? e.message : String(e)).slice(0, 200);
@@ -212,7 +219,9 @@ export class Orchestrator {
       const reviewCtx: ReviewContext = { taskSpec: task, artifact, repoPath: wt, riskScore: 0 };
       lastResult = await this.deps.pipeline.run(reviewCtx);
       for (const v of lastResult.verdicts) {
-        await store.append('StageVerdict', runId, task.id, 'pipeline', v);
+        // I6: verdict artifact'e bağlanır (parentArtifactEventId zorunlu — validateChain scalar listesi);
+        // I5: stage'in errorMessage'ı (varsa) kanıta taşınır.
+        await store.append('StageVerdict', runId, task.id, 'pipeline', { ...v, parentArtifactEventId: artEvent.event_id });
       }
       await store.append('RiskScored', runId, task.id, 'risk-triage', {
         score: reviewCtx.riskScore, signals: reviewCtx.riskSignals ?? {}, policyVersion: String(policy.version),

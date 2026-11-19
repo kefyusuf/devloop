@@ -4,7 +4,8 @@ import { SEVERITY_ORDER } from '../contracts/schemas.js';
 import type { Policy } from '../config/config.js';
 
 export interface PipelineResult {
-  verdicts: Array<{ stage: string; status: StageResult['status']; durationMs: number }>;
+  // I5 (final review): errorMessage kanıt zincirine taşınır — StageVerdict payload'u opsiyonel alır.
+  verdicts: Array<{ stage: string; status: StageResult['status']; durationMs: number; errorMessage?: string }>;
   findings: Finding[];
   gateFailed: string | null;
   passed: boolean;
@@ -32,7 +33,8 @@ export class ReviewPipeline {
       let res: StageResult;
       try { res = await s.evaluate(ctx); }
       catch (e) { res = { status: 'error', findings: [], durationMs: 0, errorMessage: String(e) }; }
-      verdicts.push({ stage: s.name, status: res.status, durationMs: res.durationMs });
+      // I5: stage'in hata mesajı (varsa) verdict'e taşınır — event kanıtında diagnoz edilebilir.
+      verdicts.push({ stage: s.name, status: res.status, durationMs: res.durationMs, ...(res.errorMessage !== undefined ? { errorMessage: res.errorMessage } : {}) });
       allFindings.push(...res.findings);
       if (s.kind === 'gate') {
         const unauthorizedSkip = res.status === 'skipped' && !this.policy.authorizedSkips.includes(s.name);

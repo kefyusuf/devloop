@@ -35,6 +35,16 @@ describe('event union (tip güvenli payload)', () => {
     const ev = DevloopEventSchema.parse({ ...env, type: 'TaskBlocked', payload: { reason: 'gate-fail: static-gates' } });
     expect(ev.payload.reason).toContain('gate-fail');
   });
+  it('StageVerdict parentArtifactEventId zorunlu (I6); errorMessage opsiyonel', () => {
+    const env = makeEnvelope('r', 't', 'o');
+    // I6: artifact parent'sız verdict artık şemaya aykırı — kanıt zinciri binding zorunlu
+    const bad = DevloopEventSchema.safeParse({ ...env, type: 'StageVerdict', payload: { stage: 'static-gates', status: 'pass', durationMs: 1 } });
+    const ok = DevloopEventSchema.safeParse({ ...env, type: 'StageVerdict', payload: { stage: 'static-gates', status: 'error', durationMs: 2, parentArtifactEventId: 'art-1', errorMessage: 'eslint patladı' } });
+    const minimal = DevloopEventSchema.safeParse({ ...env, type: 'StageVerdict', payload: { stage: 'static-gates', status: 'pass', durationMs: 1, parentArtifactEventId: 'art-1' } });
+    expect(bad.success).toBe(false);
+    expect(ok.success).toBe(true);
+    expect(minimal.success).toBe(true);
+  });
   it('tolerant: idempotencyKey opsiyonel', () => {
     const env = makeEnvelope('r', 't', 'o', 'key-1');
     const ev = DevloopEventSchema.parse({ ...env, type: 'RunStarted', payload: { configSnapshot: {} } });

@@ -14,7 +14,7 @@ const P = {
   ArtifactProduced: z.object({ artifact: ArtifactSchema, parentTaskEventId: z.string() }),
   RiskScored: z.object({ score: z.number().min(0).max(100), signals: z.record(z.number()), policyVersion: z.string(), parentArtifactEventId: z.string() }),
   FindingEmitted: z.object({ finding: FindingSchema, parentArtifactEventId: z.string(), parentRiskEventId: z.string().optional() }),
-  StageVerdict: z.object({ stage: z.string(), status: z.enum(['pass', 'fail', 'error', 'skipped']), durationMs: z.number(), errorMessage: z.string().optional() }),
+  StageVerdict: z.object({ stage: z.string(), status: z.enum(['pass', 'fail', 'error', 'skipped']), durationMs: z.number(), errorMessage: z.string().optional(), parentArtifactEventId: z.string() }),
   HumanDecision: z.object({ decision: z.enum(['accept', 'reject']), reason: DecisionReason, note: z.string().optional(), parentFindingEventIds: z.array(z.string()) }),
   PRCreated: z.object({ url: z.string().nullable(), title: z.string(), commitSha: z.string().nullable(), diffDigest: z.string() }),
   TaskBlocked: z.object({ reason: z.string(), parentArtifactEventId: z.string().optional() }),

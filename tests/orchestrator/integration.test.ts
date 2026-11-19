@@ -66,6 +66,9 @@ describe('orchestrator uçtan uca kablolama (C1 repo bağlamı + C2 repo-içi wo
     const verdicts = store.query({ type: 'StageVerdict' }).map((e) => e.payload);
     expect(verdicts.map((v) => v.stage)).toEqual(['risk-triage', 'static-gates']);
     expect(verdicts.every((v) => v.status === 'pass')).toBe(true);
+    // I6: StageVerdict artifact'e bağlanır (validateChain scalar binding'i artık verdict'leri de kapsar)
+    const artEvent = store.query({ type: 'ArtifactProduced' })[0];
+    expect(verdicts.every((v) => v.parentArtifactEventId === artEvent.event_id)).toBe(true);
 
     // worktree temizliği: görev sonrası altında dosya kalmaz
     expect(readdirSync(join(repo, '.devloop', 'worktrees'))).toEqual([]);
