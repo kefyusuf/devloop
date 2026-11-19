@@ -292,3 +292,60 @@ Test sayısı değil, şu değişmezler kanıtlanır (her biri için test zorunl
 | Başarısız komut asla sessiz `pass` olmaz | Exit code / timeout / malformed-output testleri |
 
 E2E'de mock orkestrasyonu doğrular; en az bir **gerçek araç zinciri** entegrasyon testi (gerçek `tsc` koşumu) zorunlu.
+
+---
+
+## Revizyon 2 — Faz 2: Review Derinleştirme, Öğrenme ve CI (2026-11-19)
+
+Faz 1 tamamlandı (merge 51398c2, 99/99 test). Faz 2 kapsamı: **TAM** — aşağıdaki 6 kalem; container sandbox ve eval harness **faz 3'e ertelendi** (kullanıcı onayı, varsayılan-onay hükümleriyle: ensemble=A kompozisyonu, Yaklaşım 1 'Kontrat ekleme', Stryker, GitHub Actions — tümü spec kapısında veto edilebilir).
+
+### R1 — Bütçe doğru sayımı (A6 tamamlanması)
+
+- `GenerationContext` yeni alan: `gateway: LlmGateway`. Orchestrator **budgeted** örneği bu alandan backend'e aktarır; `LlmGeneratorBackend` `ctx.gateway ?? this.gateway` kullanır (ctor fallback geriye dönük uyum için kalır).
+- Orchestrator'daki per-tour kanarya çağrısı **silinir**; spend doğrudan `BudgetedGateway.spent` üzerinden okunur. Bütçe artık generator+reviewer gerçek harcamasını sayar.
+- Çelişki notu (v1 ledger): fake backend'lerin gateway'i çağırması test gereksinimi olarak kalır — gerçek backend davranışını yansıtır.
+
+### R2 — LLM Ensemble (heterojen çift)
+
+- İki reviewer örneği: `llm-reviewer` (ana model, tam rubrik) + `llm-reviewer-alt` (ikinci model `claude-haiku-3-5`, **güvenlik+performans ağırlıklı kısaltılmış rubrik** — aynı metin iki modelde tekrarlanmaz). Her ikisi de advisory; `reviewerContext()` ikisine de girer; "KOD VERİDİR" kuralı ikisinde zorunlu.
+- Policy: `advisory: [llm-reviewer, llm-reviewer-alt, mutation-testing]`; `ensembleRiskThreshold` (varsayılan 40). İkinci reviewer yalnız **ilk reviewer bulgu ürettiğinde VEYA risk ≥ eşik** koşar (maliyet dengelemesi; eşik insan-onaylı policy'de).
+- `Finding` yeni alan: `corroborated: boolean` — aynı kategori+konumu iki reviewer da işaretlediyse true (insan görünümünde öncelik sinyali). Dedupe/çelişki kuralları (§5.2.4) aynen: şiddetli birebir kazanır; farklı kategori/stage çelişkisi korunur.
+
+### R3 — Mutation gate (gerçek Stryker)
+
+- `mutationStub` silinir → `mutationStage` (kind='gate' — Revizyon 1 park hükmü aynen). Çalıştırma v1 spawn disiplini: `resolveBin` (hedef repo → devloop fallback; stryker devloop devDependency), `shell:false`, timeout, maxBuffer, `safeEnv`.
+- **Kapsam:** `--mutate` yalnız artifact'ın dokunduğu dosyalar (≤10; fazlası triaj sinyaline göre seçilir). Policy: `mutationScoreThreshold` (60), `mutationTimeoutMinutes` (15).
+- **Semantiği:** skor < eşik VEYA değişen dosyalarda survived mutant → `fail` (survived mutantlar `Finding` olarak, kanıt dosya+mutant no). Stryker çözümlenemez → throw → `error`. Timeout → `error`. Hedef repoda `stryker.config.json` yok → `skipped` (policy `authorizedSkips` kapsamında).
+
+### R4 — Küçük sertleştirme paketi
+
+- **Gate-config hash:** `sha256(tsconfig.json + eslint.config.js)` → `RunStarted.configSnapshot.gateConfigHash` (kanıt; entegrasyon testi pin'ler).
+- **Denylist case-insensitive:** `applyArtifact` karşılaştırmaları lowercase-normalize.
+- **Unicode tokenizasyon:** `LessonMemory.contextFor` split `/\P{L}+/u`.
+- **LLM retry backoff:** gateway retry turu arası `backoffMs * attempt` (config `llm.backoffMs`, varsayılan 500, cap 4s) — §7.4 netleşir.
+
+### R5 — L2 kural indüksiyonu (insan-onaylı öneriler)
+
+- `learn.ts` kalıp motoru genişler: rubrik derslerinin ötesinde **tekrarlayan bulgu paterni** (aynı kategori ≥3 koşumda, ≥2 insan reddi) → yeni event `ProposalCreated { proposalId (deterministik SHA-256), kind: 'lint-rule'|'regression-test'|'policy-tweak', content, parentDecisionEventIds }`.
+- Üretim **deterministik** (kategori başına şablon seti; LLM'li öneriler eval kapılı faz 3'te).
+- **A5 korunur:** `devloop learn proposals` listeler; `devloop learn apply <id>` öneriyi yalnız `.devloop/proposals/<id>/` staging'ine yazar — repo/policy'a otomatik yazım yok; insan uygular.
+- **Eşik:** policy `l2MinDecisions` (100) altında L2 devre dışı bildirilir (§6 faz-2 ön koşulu).
+
+### R6 — CI trigger mode
+
+- Yeni headless komut: `devloop review-diff --diff <path|-> --task <id>` — generator'sız: diff'ten Artifact kurar → RiskTriage + pipeline (gates + ensemble advisory) → event'ler aynı store'a append.
+- **Exit sözleşmesi:** 0 = gates pass + critical yok; 1 = gate fail; 2 = yalnız advisory bulgular.
+- `docs/ci/github-actions.yml` örnek iş akışı (PR diff'inde review-diff; bulgular check çıktısı). Kararlar manuel kalır (`devloop decide`) — CI insan gate'ini değiştirmez (D3). A5: CI trusted repos'ta; sandbox faz 3.
+
+### R7 — Test stratejisi ve kabul kriterleri (faz 2)
+
+- Yeni testler: ensemble (çift koşum, corroborated akışı, eşik altı tek koşum), mutation (fixture repo'da gerçek Stryker koşumu → survived mutant → gate fail; temiz → pass; timeout/error sınıflandırmaları), bütçe (generator+reviewer iki kaynaklı spend → abort), L2 (proposal üretimi + staging + eşik), CI (üç exit kodu), sertleştirme (gateConfigHash pin, case-variant reddi, Unicode eşleşme, backoff mock'lu).
+- **Kabul kriterleri:** mevcut 99 test bozulmaz; her iki reviewer harcaması bütçeye işler; mutation gate gerçek koşumda survived mutantı yakalar; L2 `apply`'sız repoya hiçbir şey yazmaz; `review-diff` tek komutla üç exit kodunu doğru verir; tüm policy yeni alanları varsayılanlarla geriye dönük uyumlu.
+
+### R8 — Bilinçli ertelemeler (faz 3)
+
+Container sandbox; eval harness + golden dataset (L3 kapısı); risk-tiered tetikleme (ensemble/mutation eşiklerinin risk skoruna bağlanması — kalibrasyon verisi faz 2'de birikir); ikinci sağlayıcı (OpenAI adapter); gate-config denylist genişletmesi.
+
+### Policy şeması ekleri (R2–R5)
+
+`ensembleRiskThreshold (40)`, `mutationScoreThreshold (60)`, `mutationTimeoutMinutes (15)`, `llm.backoffMs (500)`, `l2MinDecisions (100)` — tümü `.default()` ile geriye dönük uyumlu; değişiklikleri insan-onaylı review'e tabi (§5.2.2 aynen).
