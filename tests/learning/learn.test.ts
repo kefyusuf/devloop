@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { generateCandidates, confirmCandidate } from '../../src/learning/learn.js';
+import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../../src/learning/learn.js';
 import { VerdictStore } from '../../src/store/store.js';
 import { LessonMemory } from '../../src/memory/memory.js';
 import { buildCli } from '../../src/shell/cli.js';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -75,5 +75,31 @@ describe('CLI learn reject (aday tombstone)', () => {
     await seed(store, 'security', 2, 'false-positive');
     await expect(buildCli(dir).parseAsync(['node', 'devloop', 'learn', 'reject', 'yok-boyle-id']))
       .rejects.toThrow('Aday veya aktif ders bulunamadı');
+  });
+});
+
+// R5 (faz 2 T7): L2 kural indüksiyonu — deterministik proposal üretimi + ProposalCreated staging.
+describe('generateProposals (L2)', () => {
+  it('≥2 reject + ≥3 ayrı koşum + global eşik → lint-rule proposal; applied olan listelenmez', async () => {
+    const store = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'l2-')), 'e.jsonl'));
+    await store.append('RunStarted', 'r1', '-', 'o', { configSnapshot: {} });
+    await store.append('RunStarted', 'r2', '-', 'o', { configSnapshot: {} });
+    await store.append('RunStarted', 'r3', '-', 'o', { configSnapshot: {} });
+    for (const [i, run] of ['r1', 'r2', 'r3'].entries()) {
+      const art = await store.append('ArtifactProduced', run, `t${i}`, 'b', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
+      const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-ensemble', { finding: { id: `f${i}`, stage: 'llm-ensemble', category: 'off-by-one', severity: 'required', confidence: 0.9, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
+      await store.append('HumanDecision', run, `t${i}`, 'h', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [f.event_id] });
+    }
+    const proposals = generateProposals(store, 3); // l2MinDecisions=3 (test küçültmesi)
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({ kind: 'lint-rule', category: 'off-by-one' });
+    const ev = await applyProposal(store, join(tmpdir(), 'l2stage'), proposals[0]);
+    expect(ev.type).toBe('ProposalCreated');
+    expect(existsSync(join(tmpdir(), 'l2stage', proposals[0].proposalId, 'PROPOSAL.md'))).toBe(true);
+    expect(generateProposals(store, 3)).toHaveLength(0); // applied → listelenmez
+  });
+  it('l2MinDecisions altında → boş', async () => {
+    const store = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'l2b-')), 'e.jsonl'));
+    expect(generateProposals(store, 100)).toHaveLength(0);
   });
 });

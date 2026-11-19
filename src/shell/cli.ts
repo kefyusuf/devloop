@@ -6,7 +6,7 @@ import { VerdictStore, validateChain } from '../store/store.js';
 import { AnthropicGateway } from '../gateway/gateway.js';
 import { LlmGeneratorBackend } from '../generator/generator.js';
 import { LessonMemory } from '../memory/memory.js';
-import { generateCandidates, confirmCandidate } from '../learning/learn.js';
+import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
 import { Orchestrator, BudgetedGateway } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
 import { ReviewPipeline } from '../pipeline/pipeline.js';
@@ -114,6 +114,21 @@ export function buildCli(workDir = process.cwd()): Command {
     if (!isActive) throw new Error('Aday veya aktif ders bulunamadı');
     await mem.markRetired(lessonId, []);
     console.log('Retired.');
+  });
+
+  // R5 (faz 2 T7): L2 kural önerileri — eşik l2MinDecisions policy'den okunur (varsayılan 100).
+  learn.command('proposals').action(async () => {
+    const { policy } = loadConfig(repoDir());
+    const proposals = generateProposals(store(), policy.l2MinDecisions);
+    console.log(proposals.map((p) => `${p.proposalId}  [${p.kind}]  ${p.category} — ${p.title}`).join('\n') || '(öneri yok)');
+  });
+  learn.command('apply').argument('<proposalId>').action(async (proposalId: string) => {
+    const { policy } = loadConfig(repoDir());
+    const s = store();
+    const p = generateProposals(s, policy.l2MinDecisions).find((x) => x.proposalId === proposalId);
+    if (!p) throw new Error('Öneri bulunamadı veya eşik altında');
+    await applyProposal(s, join(repoDir(), '.devloop', 'proposals'), p);
+    console.log('Öneri kaydedildi (ProposalCreated) + PROPOSAL.md yazıldı — insan onayı bekler.');
   });
 
   program.command('decide').requiredOption('--task <id>').option('--accept').option('--reject')

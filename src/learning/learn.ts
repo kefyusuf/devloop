@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { VerdictStore } from '../store/store.js';
 import type { LessonMemory } from '../memory/memory.js';
-import type { EventPayloadMap } from '../contracts/events.js';
+import type { DevloopEvent, EventPayloadMap } from '../contracts/events.js';
 
 export interface CandidateLesson {
   lessonId: string; rule: string; scope: string; confidence: number;
@@ -64,5 +66,61 @@ export async function confirmCandidate(store: VerdictStore, memory: LessonMemory
     status: 'active', targetComponent: c.targetComponent, parentDecisionEventIds: c.parentDecisionEventIds,
   });
   memory.render();
+  return ev;
+}
+
+// R5 (faz 2 T7): L2 kural indüksiyonu — reject-only kararlar kategoriye göre gruplanır; ≥2 ret +
+// ≥3 ayrı koşum + global karar eşiği (l2MinDecisions) geçilince deterministik lint-rule önerisi.
+export interface Proposal {
+  proposalId: string; kind: 'lint-rule' | 'regression-test' | 'policy-tweak';
+  category: string; title: string; content: Record<string, unknown>; parentDecisionEventIds: string[];
+}
+
+export function generateProposals(store: VerdictStore, l2MinDecisions: number): Proposal[] {
+  const decisions = store.query({ type: 'HumanDecision' });
+  if (decisions.length < l2MinDecisions) return [];
+  const applied = new Set<string>();
+  for (const e of store.query({ type: 'ProposalCreated' })) {
+    if (e.type !== 'ProposalCreated') continue; // union daraltma (strict tsc — memory.ts ile aynı desen)
+    applied.add(e.payload.proposalId);
+  }
+  const byFinding = new Map<string, string>();
+  for (const e of store.query({ type: 'FindingEmitted' })) {
+    if (e.type !== 'FindingEmitted') continue; // union daraltma (strict tsc)
+    byFinding.set(e.event_id, e.payload.finding.category);
+  }
+  const buckets = new Map<string, { rejects: string[]; runs: Set<string>; decisionIds: string[] }>();
+  for (const d of decisions) {
+    if (d.type !== 'HumanDecision') continue; // union daraltma (strict tsc)
+    if (d.payload.decision !== 'reject') continue;
+    const category = d.payload.parentFindingEventIds.map((id) => byFinding.get(id)).find(Boolean) ?? 'unknown';
+    const b = buckets.get(category) ?? { rejects: [], runs: new Set<string>(), decisionIds: [] };
+    b.rejects.push(d.payload.reason);
+    b.runs.add(d.run_id);
+    b.decisionIds.push(d.event_id);
+    buckets.set(category, b);
+  }
+  const out: Proposal[] = [];
+  const id = (kind: string, cat: string, ids: string[]) =>
+    createHash('sha256').update(`${kind}:${cat}:${[...ids].sort().join('|')}`).digest('hex').slice(0, 16);
+  for (const [category, b] of buckets) {
+    if (b.rejects.length < 2 || b.runs.size < 3 || applied.has(id('lint-rule', category, b.decisionIds))) continue;
+    out.push({ proposalId: id('lint-rule', category, b.decisionIds), kind: 'lint-rule', category,
+      title: `"${category}" bulguları tekrarlıyor — erken yakalayan lint kuralı önerisi`,
+      content: { note: 'İnsan onayıyla eslint.config.js kurallarına eklenir; deterministik şablon (faz 2).', category },
+      parentDecisionEventIds: b.decisionIds });
+  }
+  return out;
+}
+
+export async function applyProposal(store: VerdictStore, proposalsDir: string, p: Proposal): Promise<DevloopEvent> {
+  const ev = await store.append('ProposalCreated', 'learning', p.proposalId, 'learning', {
+    proposalId: p.proposalId, kind: p.kind, category: p.category, title: p.title,
+    content: p.content, parentDecisionEventIds: p.parentDecisionEventIds,
+  });
+  const dir = join(proposalsDir, p.proposalId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'PROPOSAL.md'),
+    `# ${p.title}\n\nkind: ${p.kind}\ncategory: ${p.category}\n\nİnsan onayı sonrası elle uygulanır — devloop otomatik yazmaz.\n\nDetay: ${JSON.stringify(p.content, null, 2)}\n`, 'utf8');
   return ev;
 }
