@@ -151,7 +151,11 @@ describe('review-diff exit kodları', () => {
     expect(typeof snap.gateConfigHash).toBe('string');
     expect(snap.model).toBe(ciPolicy.llm.model);
     expect(snap.budgetUsd).toBe(ciPolicy.budgetUsd);
-    // R14 (faz 3 T5 ertelenen minor): configSnapshot.gates — koşulan gate kümesi kanıta birebir yazılır.
+    // R15 (faz 3 T9) hüküm: configSnapshot.gates — SEÇİLEN pipeline'ın etkin stage kümesi
+    // (chosen.stageNames()) kanıta yazılır; ham policy gates'i DEĞİL (T5 ertelenen minor'un
+    // kapanışı). Bu testte gate/full pipeline aynı stage setine sahiptir (ciPolicy.advisory boş,
+    // ikisi de yalnız risk-triage stage'i) → değer ham gates ile aynıdır; low-risk koşumda
+    // llm-ensemble OLMAMASI değişmezi tests/e2e/invariants.test.ts'te pinlenir.
     expect(snap.gates).toEqual(ciPolicy.gates);
     // event zinciri: RunStarted → TaskPicked → ArtifactProduced → StageVerdict/RiskScored; runId ci-<task>
     expect(store.query({ runId: 'ci-t1', type: 'TaskPicked' }).length).toBe(1);

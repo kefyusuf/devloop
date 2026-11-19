@@ -139,4 +139,111 @@ devloop learn apply <proposalId>    # öneriyi yalnız <repo>/.devloop/proposals
 Tümü `.default()` ile geldiğinden mevcut `policy.yaml` dosyaları geriye dönük uyumludur; policy
 değişiklikleri insan-onaylı review'e tabidir (§5.2.2).
 
+## Faz 3
+
+### Eval harness + golden dataset (R9)
+
+```bash
+devloop eval                    # production pipeline ile golden set koşumu
+devloop eval --full             # ensemble dahil (LLM çağrısı yapar — API anahtarı gerekir)
+devloop eval --candidate <dir>  # shadow: aday policy ile aynı golden seti (salt-okunur karşılaştırma)
+```
+
+- Golden görevler hedef repoda **`.devloop/golden/*.task.json`** olarak versiyonlanır. Format:
+
+  ```json
+  {
+    "goldenId": "g1",
+    "taskSpec": { "id": "gt1", "description": "…", "acceptanceCriteria": ["…"], "filesScope": [] },
+    "fixtureDiff": "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;",
+    "expected": {
+      "gatesPass": true,
+      "requiredFindings": [{ "category": "test-diff" }],
+      "forbiddenCategories": ["secret"]
+    }
+  }
+  ```
+
+- Skor: her görev `expected` ile karşılaştırılır (R9 **donmuş yargıç** — karşılaştırma yalnız golden
+  `expected` + gate çıktıları üzerinden; öğrenen bileşenler jüri olmaz). `score = geçen / toplam × 100`
+  (10'da 1 yuvarlanır: 2/3 → 66.7). Sonuç `EvalRun` event'i olarak kanıt zincirine yazılır;
+  `configSnapshot.mode='production'` (candidate'sız) veya `configSnapshot.candidate=<etiket>` +
+  `comparedTo=<önceki production evalId>` (shadow) taşır.
+- **Shadow salt-okunurdur:** `--candidate` koşumu üretim `policy.yaml`/lessons/proposals'a SIFIR yazım
+  yapar; yalnız kanıt event'leri düşer. Aday policy dizini `policy.yaml` içermiyorsa komut fail-closed
+  hata verir (sessiz varsayılan-policy düşüşü yok).
+- Şemaya uymayan görev dosyaları koşum dışı bırakılmaz-yazılmaz: `invalid` listesinde raporlanır.
+- Koşum `--full` olmadan LLM çağrısı yapmaz — pipeline gate stage'leriyle (risk-triage, static-gates,
+  tests, secret-scan, mutation-testing) deterministik koşar; kanıttaki bulgular yalnız bu stage'lerden
+  gelir.
+
+### L3 evrim — evolve (R10)
+
+```bash
+devloop evolve --shadow         # playbook aday üretimi + adayların shadow eval'i
+devloop evolve apply <evoId>    # adayı golden-gerileme kapısıyla playbook staging'e yazar
+```
+
+- Aday üretimi **yalnız L3 aktifken** çalışır: golden görev sayısı `l3MinGoldenTasks` (varsayılan **50**)
+  altındaysa aday üretilmez. Sinyaller deterministiktir: tekrarlayan false-positive ret kararları →
+  `playbook-reviewer` adayı; tekrarlayan test-diff bulguları → `playbook-generator` adayı. Shadow/eval
+  koşumlarının kendi kanıtları sinyal sayılmaz (kendi kendini besleyen gürültü yok).
+- **Golden-gerileme red kapısı:** adayın shadow eval'i baseline'dan **daha çok golden görevi
+  kırmışsa** (`shadowEval.failed > baseline.failed`) `apply` reddedilir — staging dosyası da kanıt
+  event'i de yazılmaz.
+- Apply **A5 staging kuralı**: yalnız `<repo>/.devloop/playbooks/<evoId>.json` yazılır +
+  `ProposalCreated` kanıtı düşer. Policy/lint kuralı/lessons'a otomatik yazım yok — değişikliği insan
+  devreye alır.
+
+### Risk-tiered davranış (R11)
+
+- **CI derinliği (`review-diff`):** RiskTriageStage önce tek başına koşar; skor
+  `ciEnsembleRiskThreshold` (varsayılan **20**) altındaysa gate-only pipeline koşar (ensemble'sız —
+  low-risk CI koşumu LLM harcamaz); eşikte/üstünde full pipeline (gates + llm-ensemble) koşar.
+  `RunStarted` kanıtındaki `configSnapshot.gates` **seçilen** pipeline'ın etkin stage kümesini birebir
+  taşır (low-risk koşumda `llm-ensemble` yoktur, derin koşumda vardır).
+- **Mutation kapsam ölçekleme:** mutation gate'inin `--mutate` seçimi risk skoruna göre ölçeklenir:
+  `risk < 30` → `mutationScopeLow` (varsayılan 5) dosya, değilse `mutationScopeHigh` (varsayılan 10)
+  dosya (içerik-uzunluğu DESC — deterministik).
+
+### OpenAI provider (R12)
+
+- `llm.provider: openai` seçilirse gateway **OpenAIGateway** olur (`POST
+  https://api.openai.com/v1/chat/completions`, `response_format: json_object`): anahtar yalnız
+  `OPENAI_API_KEY` ortam değişkeninden. Model/limit/maliyet alanları `llm.openai.*` bloğundadır
+  (`model: gpt-4.1`, `fallbackModel: gpt-4.1-mini`); usage `prompt_tokens/completion_tokens` OpenAI
+  oranlarıyla maliyetleşir.
+- **Fail-closed:** anahtar yoksa seçilen provider GatewayError verir — sessiz düşüş yok. Retry/backoff
+  + `openai.fallbackModel` fallback davranışı Anthropic adapter ile birebir aynıdır
+  (`llm.backoffMs`).
+
+### Container sandbox (R13)
+
+- `sandbox.mode: docker` seçilirse lint/tip/test koşumları `dockerizeSpawn` ile konteynere sarılır:
+  `docker run --rm -v <worktree>:/workspace -w /workspace --network none <sandbox.image> npx …`
+  (`sandbox.image`, varsayılan `node:20-bookworm-slim`). Araç çözümleme konteyner içi npx ile yapılır —
+  **hedef repoun kendi toolchain'i** mount edilen node_modules'tan gelir.
+- Gereksinimler: Docker daemon erişimi + hedef repoda toolchain (node_modules). Docker yoksa koşum
+  **run-level abort** ile açık mesajla durur (sessiz host-run yok). Mutation gate'in konteyner koşumu
+  (containment) faz 3.1'e ertelendi: docker modda mutation gate fail-closed error verir.
+- `sandbox.mode: host` (varsayılan) mevcut davranıştır.
+
+### Faz 3 policy alanları
+
+| Alan | Varsayılan | Anlamı |
+| --- | --- | --- |
+| `l3MinGoldenTasks` | `50` | L3 evrim aday üretimi için gereken minimum golden görev sayısı |
+| `ciEnsembleRiskThreshold` | `20` | review-diff risk skoru bunun altındaysa gate-only pipeline koşar (LLM yok) |
+| `mutationScopeLow` | `5` | LOW-risk (< 30) koşumda mutate edilecek maksimum dosya sayısı |
+| `mutationScopeHigh` | `10` | HIGH-risk (≥ 30) koşumda mutate edilecek maksimum dosya sayısı |
+| `sandbox.mode` | `host` | `docker` → araç koşumları konteynere sarılır (Docker daemon + repo toolchain gerekir) |
+| `sandbox.image` | `node:20-bookworm-slim` | docker modunda kullanılan konteyner imajı |
+| `llm.provider` | `anthropic` | `openai` → OpenAIGateway (`OPENAI_API_KEY`, `llm.openai.*`) |
+| `llm.openai.model` | `gpt-4.1` | OpenAI ana model |
+| `llm.openai.fallbackModel` | `gpt-4.1-mini` | OpenAI fallback model |
+| `llm.openai.costPer1kInput` / `costPer1kOutput` | `0.0025` / `0.01` | OpenAI maliyet oranları (USD / 1K token) |
+
+Tümü `.default()` ile geldiğinden mevcut `policy.yaml` dosyaları geriye dönük uyumludur; policy
+değişiklikleri insan-onaylı review'e tabidir (§5.2.2).
+
 Detaylı tasarım: `docs/superpowers/specs/2026-11-18-ai-dev-loop-design.md`

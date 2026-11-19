@@ -23,6 +23,17 @@ export class ReviewPipeline {
     return wanted.map((n) => byName.get(n)!);
   }
 
+  /**
+   * R15 (faz 3 T9): bu pipeline koşulduğunda ÇALIŞACAK etkin stage adları (gates + advisory seçimi,
+   * ordered() ile aynı kural). RunStarted configSnapshot.gates kanıtı bunu taşır — snapshot daima
+   * GERÇEKTEN koşulan kümeyle birebir uyumlu (T5 ertelenen minor'un kapanışı: ham policy gates'i
+   * değil, seçilen pipeline'ın kümesi kanıta düşer). A2 fail-closed burada da geçerlidir: policy
+   * olmayan stage referansı çağrıda PipelineConfigError fırlatır.
+   */
+  stageNames(): string[] {
+    return this.ordered().map((s) => s.name);
+  }
+
   async run(ctx: ReviewContext): Promise<PipelineResult> {
     const verdicts: PipelineResult['verdicts'] = [];
     const allFindings: Finding[] = [];

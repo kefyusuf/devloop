@@ -86,6 +86,10 @@ export function parseDiff(diff: string): Array<{ path: string; addedContent: str
  * (risk skorunu hesaplar); skor < policy.ciEnsembleRiskThreshold → gatePipeline (ensemble'sız —
  * low-risk CI koşumu LLM harcamaz), değilse → fullPipeline (gates + llm-ensemble). Çıkış sözleşmesi
  * ve event zinciri (TaskPicked→ArtifactProduced→StageVerdicts→RiskScored→FindingEmitted) aynen korunur.
+ * R15 (faz 3 T9): RunStarted.configSnapshot.gates = SEÇİLEN pipeline'ın etkin stage kümesi
+ * (stageNames) — ham policy gates'i DEĞİL; snapshot koşulan kümeyle birebir uyumlu (T5 ertelenen
+ * minor'un kapanışı). Hüküm: RunStarted artık triaj+seçim SONRASI yazılır (koşumun ilk store event'i
+ * olma özelliği korunur) — config'i bozuk pipeline artık hiçbir event yazmadan daha ERKEN throw eder.
  */
 export async function runReviewDiff(args: {
   diffText: string; taskSpecId: string; gatePipeline: ReviewPipeline; fullPipeline: ReviewPipeline; store: VerdictStore;
@@ -95,28 +99,6 @@ export async function runReviewDiff(args: {
   const artifact = { diff: args.diffText, intent: 'ci-review', rejectedAlternatives: [], testEvidence: 'ci', files };
   const runId = `ci-${args.taskSpecId}`;
   const taskSpec = { id: args.taskSpecId, description: 'CI review-diff', acceptanceCriteria: ['gates pass'], filesScope: [] };
-  // I3 (final fix wave, A6/R4a): CI koşumları da RunStarted kanıtıyla açılır — policyHash (resume
-  // karşılaştırması) ve gateConfigHash (kanıt; orchestrator'daki ifadelerin birebir aynısı) kanıta
-  // yazılır. Idempotent: aynı runId için RunStarted zaten varsa (tekrarlı CI koşumu) ikinci kez yazılmaz.
-  if (args.store.query({ runId, type: 'RunStarted' }).length === 0) {
-    const policyHash = createHash('sha256').update(JSON.stringify(args.policy)).digest('hex').slice(0, 16);
-    await args.store.append('RunStarted', runId, args.taskSpecId, 'ci', {
-      configSnapshot: {
-        policyHash,
-        gateConfigHash: computeGateConfigHash(args.repoPath),
-        model: args.policy.llm.model,
-        budgetUsd: args.policy.budgetUsd,
-        // R14 (faz 3 T5 ertelenen minor): koşulan gate kümesi kanıta birebir yazılır — pipeline
-        // ordered() policy.gates+advisory ile seçim yapar; snapshot daima koşulan kümeyle uyumlu.
-        gates: args.policy.gates,
-      },
-    });
-  }
-  const picked = await args.store.append('TaskPicked', runId, args.taskSpecId, 'ci', { taskSpec });
-  // Hüküm: brief `parentTaskEventId: 'ci'` literal'i yazıyordu — A3 nedensel bütünlük
-  // (validateChain) tüm parent*EventId referanslarının GERÇEK event'lere işaret etmesini zorunlu
-  // kılar; orchestrator'daki gibi gerçek TaskPicked event_id'si kullanılır.
-  const art = await args.store.append('ArtifactProduced', runId, args.taskSpecId, 'ci', { artifact, parentTaskEventId: picked.event_id });
   // ReviewContext tipi: RiskTriageStage riskScore/riskSignals'ı BU nesneye yazar — RiskScored
   // event'i gerçek skorla yazılır (brief'in tip'siz literal'i riskSignals alanını göremiyordu).
   const ctx: ReviewContext = { taskSpec, artifact, repoPath: args.repoPath, riskScore: 0 };
@@ -125,6 +107,29 @@ export async function runReviewDiff(args: {
   const triageResult = await triage.evaluate(ctx);
   // 2. risk < ciEnsembleRiskThreshold → gatePipeline; değilse fullPipeline.
   const chosen = ctx.riskScore < args.policy.ciEnsembleRiskThreshold ? args.gatePipeline : args.fullPipeline;
+  // I3 (final fix wave, A6/R4a): CI koşumları da RunStarted kanıtıyla açılır — policyHash (resume
+  // karşılaştırması) ve gateConfigHash (kanıt; orchestrator'daki ifadelerin birebir aynısı) kanıta
+  // yazılır. Idempotent: aynı runId için RunStarted zaten varsa (tekrarlı CI koşumu) ikinci kez yazılmaz.
+  // R15 hüküm (faz 3 T9): kanıt SEÇİM sonrası yazılır — configSnapshot.gates = SEÇİLEN pipeline'ın
+  // etkin stage kümesi (chosen.stageNames()); low-risk koşumda llm-ensemble YOK, high-risk'te VAR.
+  // Koşumun ilk store event'i olma özelliği korunur (RunStarted → TaskPicked → …).
+  if (args.store.query({ runId, type: 'RunStarted' }).length === 0) {
+    const policyHash = createHash('sha256').update(JSON.stringify(args.policy)).digest('hex').slice(0, 16);
+    await args.store.append('RunStarted', runId, args.taskSpecId, 'ci', {
+      configSnapshot: {
+        policyHash,
+        gateConfigHash: computeGateConfigHash(args.repoPath),
+        model: args.policy.llm.model,
+        budgetUsd: args.policy.budgetUsd,
+        gates: chosen.stageNames(),
+      },
+    });
+  }
+  const picked = await args.store.append('TaskPicked', runId, args.taskSpecId, 'ci', { taskSpec });
+  // Hüküm: brief `parentTaskEventId: 'ci'` literal'i yazıyordu — A3 nedensel bütünlük
+  // (validateChain) tüm parent*EventId referanslarının GERÇEK event'lere işaret etmesini zorunlu
+  // kılar; orchestrator'daki gibi gerçek TaskPicked event_id'si kullanılır.
+  const art = await args.store.append('ArtifactProduced', runId, args.taskSpecId, 'ci', { artifact, parentTaskEventId: picked.event_id });
   const result = await chosen.run(ctx);
   // Bağımsız triaj koşumunun KENDİ StageVerdict'i (koşum sırasına göre ilk — risk-triage her koşumda
   // 'pass' döner; skor hesaplama gate'i değil, bulguları advisory niteliğindedir).
