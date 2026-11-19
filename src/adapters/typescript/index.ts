@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { StackAdapter, TestRunResult } from '../types.js';
 import type { Finding } from '../../contracts/schemas.js';
 import { parseEslintJson, parseTscOutput, parseVitestOutput } from './parsers.js';
@@ -58,11 +59,28 @@ async function runTool(repoPath: string, bin: string, args: string[]): Promise<T
  */
 export function resolveBin(repoPath: string, subpath: string): string | null {
   const candidates = [
-    () => createRequire(join(repoPath, 'package.json')).resolve(subpath),   // hedef reponun kendi toolchain'i
-    () => createRequire(import.meta.url).resolve(subpath),                  // devloop'un kendi node_modules'u
+    () => trySubpath(createRequire(join(repoPath, 'package.json')), subpath),   // hedef reponun kendi toolchain'i
+    () => trySubpath(createRequire(import.meta.url), subpath),                  // devloop'un kendi node_modules'u
   ];
-  for (const tryResolve of candidates) { try { return tryResolve(); } catch { /* sonraki aday */ } }
+  for (const tryResolve of candidates) { const found = tryResolve(); if (found !== null) return found; }
   return null;
+}
+
+/**
+ * A2 (C2) eki: eslint 9/10 `exports` haritası `./bin/eslint.js` alt yolunu export ETMEZ —
+ * doğrudan require.resolve ERR_PACKAGE_PATH_NOT_EXPORTED fırlatır (dosya diskte vardır).
+ * `./package.json` export edildiğinden paket kökü çözülür ve bin alt yolu köke sabitlenir
+ * (varlık denetimi existsSync ile — kökten sapma yok). `@scope/...` v1 kapsamı dışıdır.
+ */
+function trySubpath(req: NodeRequire, subpath: string): string | null {
+  try { return req.resolve(subpath); } catch { /* exports kısıtı ya da paket yok — kök çözümünü dene */ }
+  const [pkg, ...rest] = subpath.split('/');
+  if (rest.length === 0 || pkg.startsWith('@')) return null;
+  try {
+    const pkgRoot = dirname(req.resolve(join(pkg, 'package.json')));
+    const candidate = join(pkgRoot, ...rest);
+    return existsSync(candidate) ? candidate : null;
+  } catch { return null; }
 }
 
 /**

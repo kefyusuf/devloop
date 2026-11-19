@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { VerdictStore } from '../store/store.js';
 import type { GeneratorBackend } from '../generator/generator.js';
+import { readRepoContext } from '../generator/generator.js';
 import { applyArtifact } from '../generator/apply.js';
 import type { ReviewPipeline, PipelineResult } from '../pipeline/pipeline.js';
 import type { LlmGateway, TokenUsage } from '../gateway/gateway.js';
@@ -71,6 +72,10 @@ export class Orchestrator {
       await store.append('RunStarted', runId, '-', 'orchestrator', { configSnapshot: { model: policy.llm.model, budgetUsd: policy.budgetUsd, policyHash } });
     }
 
+    // A2 (C2): worktree artık repo içinde (<repo>/.devloop/worktrees/) — .devloop/ hedef reponun
+    // .git/info/exclude'una yazılır (kullanıcının .gitignore'una dokunulmaz); koşum başına bir kez.
+    this.ensureDevloopExcluded(repoPath);
+
     const budgeted = new BudgetedGateway(this.deps.gateway, policy.budgetUsd, (usd) => { this.spendUsd = usd; });
     const done = new Set([...store.query({ type: 'PRCreated' }), ...store.query({ type: 'TaskBlocked' })].map((e) => e.task_id));
     const tasks = (JSON.parse(readFileSync(tasksFile, 'utf8')) as unknown[]).map((t) => TaskSpecSchema.parse(t));
@@ -89,7 +94,9 @@ export class Orchestrator {
       if ((Date.now() - startedAt) / 60000 > policy.wallClockMinutes) { await abort('wallclock', task.id); break; }
 
       await store.append('TaskPicked', runId, task.id, 'orchestrator', { taskSpec: task });
-      const wt = join(repoPath, '..', `devloop-wt-${runId.slice(0, 8)}-${task.id}`);
+      // A2 (C2): worktree repo İÇİNDE — Node'un parent-walk'ı hedef reponun node_modules'una
+      // ulaşır (araç çözümlemesi lint/typecheck'te worktree'de çalışır; sibling path'te asla erişemezdi).
+      const wt = join(repoPath, '.devloop', 'worktrees', `${runId.slice(0, 8)}-${task.id}`);
       try {
         // Fix round 1 (Important): çöken/abort olan önceki koşumun bıraktığı stale branch worktree
         // add'i ölümcül kılar (tam resume vakası) — varsa sil, worktree add taze branch açar.
@@ -115,6 +122,25 @@ export class Orchestrator {
     return summary;
   }
 
+  /**
+   * A2 (C2): `.devloop/` hedef reponun `.git/info/exclude`'una yazılır — kullanıcının .gitignore'una
+   * dokunulmaz (repo içi worktree ana repoda `?? .devloop/` gürültüsü yaratmasın). Idempotent:
+   * mevcut exclude içeriği `.devloop/` içeriyorsa yazım yok. Kanıt günlüğü gitignore'u hedef
+   * repolarda buradan karşılanır (devloop repolar arası dosya yazmaz).
+   */
+  private ensureDevloopExcluded(repoPath: string): void {
+    const excludePath = join(repoPath, '.git', 'info', 'exclude');
+    try {
+      let content = '';
+      try { content = readFileSync(excludePath, 'utf8'); } catch { /* dosya yok — yeni yazılacak */ }
+      if (content.split(/\r?\n/).some((line) => line.trim() === '.devloop/')) return;
+      mkdirSync(join(repoPath, '.git', 'info'), { recursive: true });
+      writeFileSync(excludePath, (content && !content.endsWith('\n') ? content + '\n' : content) + '.devloop/\n', 'utf8');
+    } catch {
+      // exclude yazımı best-effort: başarısızlık koşumu engellemez (git status gürültüsü kalır, işlev bozulmaz)
+    }
+  }
+
   /** Gate enforcement gövdesi (A2): her tur pipeline → fail ise feedback → sonraki tur. Tükenirse TaskBlocked, PR yok. */
   private async executeTask(task: TaskSpec, wt: string, runId: string, gateway: BudgetedGateway, summary: RunSummary): Promise<void> {
     const { store, policy } = this.deps;
@@ -138,8 +164,11 @@ export class Orchestrator {
           schema: { parse: (x: unknown) => x },
           runId: task.id,
         });
+        // C1: generator gerçek repo bağlamını görür — orchestrator düzeyinde doldurulur
+        // (backend kendi kendine doldurmaz; orchestrator sahibi). Boş repoTree/repoFiles üretim hatasıydı.
+        const repoCtx = readRepoContext(wt, task.filesScope);
         const base = await this.deps.backend.generate(task, {
-          repoPath: wt, repoTree: '', repoFiles: [], lessons: '', feedback,
+          repoPath: wt, repoTree: repoCtx.repoTree, repoFiles: repoCtx.repoFiles, lessons: '', feedback,
         });
         artifact = base;
       } catch (e) {

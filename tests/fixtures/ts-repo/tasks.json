@@ -1,0 +1,1 @@
+[{ "id": "task-1", "description": "src/extra.ts icine extra(n) fonksiyonu ekle (yeni dosya)", "acceptanceCriteria": ["extra(1) === 2"], "filesScope": ["src/"] }]

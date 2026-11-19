@@ -75,7 +75,9 @@ describe('TypeScriptAdapter gerçek koşum (gerçek araç zinciri — tsc)', () 
   it('araç hiçbir yerde çözümlenemezse throw eder (sessiz pass yok — A6)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tsbin-'));
     expect(resolveBin(dir, 'boyle-bir-paket-yok/bogus.js')).toBeNull();
-    // eslint devloop bağımlılığı değildir: temp repo'da da yok → iki aday da başarısız → adapter throw → stage 'error'
+    // hüküm (final review C2): eslint artık devloop devDependency — resolveBin devloop node_modules'undan
+    // bulur; ama temp repo'da eslint.config yok → nonzero exit + stdout boş → runTool fatal throw.
+    // Sessiz pass yine yok; adapter throw → stage 'error'.
     await expect(new TypeScriptAdapter().lint(dir)).rejects.toThrow();
   });
 });
