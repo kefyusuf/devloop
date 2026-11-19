@@ -84,10 +84,18 @@ export function writeShadowCandidates(ctx: EvolveContext, candidates: EvolutionC
 }
 
 export async function applyEvolution(ctx: EvolveContext, candidate: EvolutionCandidate, shadowEval: EvalSummary, baseline: EvalSummary): Promise<DevloopEvent> {
-  // Golden-gerileme kapısı: shadow eval baseline'dan ÇOK golden kırıyorsa apply reddedilir —
-  // kapı throw'u TÜM yazımlardan ÖNCEdir (staging dosyası da ProposalCreated event'i de yazılmaz).
-  if (shadowEval.failed > baseline.failed) {
-    throw new Error(`Evolve reddedildi: golden gerileme (baseline failed=${baseline.failed}, shadow failed=${shadowEval.failed})`);
+  // Golden-gerileme kapısı (I1 final fix wave, spec R10 binding: "Golden sette HERHANGİ bir görev
+  // gerilerse apply reddedilir"): PER-TASK geçiş kontrolü — eski aggregate `failed >` karşılaştırması
+  // karma değişimi kaçırdı (bir görev iyileşirken diğeri geriliyorsa failed azalıyordu). Kural:
+  // baseline'da pass olan YA DA baseline'da hiç görünmeyen (yeni golden) herhangi bir görev shadow'da
+  // fail'e düşerse apply reddedilir; baseline'da zaten fail olan görev fail kalırsa gerileme DEĞİL.
+  // Kapı throw'u TÜM yazımlardan ÖNCEdir (staging dosyası da ProposalCreated event'i de yazılmaz).
+  const baselineByGolden = new Map(baseline.perTask.map((p) => [p.goldenId, p.pass]));
+  const regressions = shadowEval.perTask
+    .filter((p) => (baselineByGolden.get(p.goldenId) ?? true) === true && p.pass === false)
+    .map((p) => p.goldenId);
+  if (regressions.length > 0) {
+    throw new Error(`Evolve reddedildi: golden gerileme (${regressions.join(', ')})`);
   }
   const ev = await ctx.store.append('ProposalCreated', 'learning', '-', 'learning', {
     proposalId: candidate.evoId, kind: candidate.kind, category: candidate.kind,

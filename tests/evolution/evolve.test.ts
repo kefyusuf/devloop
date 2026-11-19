@@ -100,14 +100,59 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
 describe('applyEvolution (A5 — yalnız playbook staging + event)', () => {
   const candidate: EvolutionCandidate = { evoId: 'evo-abc', kind: 'playbook-reviewer', title: 'T', content: { note: 'n' }, sourceEvalId: 'base-eval' };
 
-  it('shadowEval.failed > baseline.failed → golden gerileme hatası + staging dosyası YAZILMAZ', async () => {
+  // hüküm (I1 final fix wave): kapı aggregate `failed >` karşılaştırmasından PER-TASK geçiş
+  // kontrolüne çevrildi (spec R10 binding) — gerileme artık yalnız gerçek bir pass→fail geçişi
+  // varken reddedilir; bu test aynı senaryoyu (failed artışı) perTask kanıtıyla sürdürür.
+  it('shadow failed artışı + per-task pass→fail → golden gerileme hatası + staging dosyası YAZILMAZ', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'evo4-'));
     const ctx = makeCtx(dir);
     writeShadowCandidates(ctx, [candidate]); // aday dosyası candidates/'ta — staging (playbooks/) değil
-    await expect(applyEvolution(ctx, candidate, baseSummary({ evalId: 'shadow-1', failed: 1, score: 98 }), baseSummary()))
-      .rejects.toThrow('golden gerileme');
+    const baseline = baseSummary({ perTask: [{ goldenId: 'g1', pass: true, reasons: [] }, { goldenId: 'g2', pass: true, reasons: [] }] });
+    const shadow = baseSummary({ evalId: 'shadow-1', failed: 1, score: 98, perTask: [{ goldenId: 'g1', pass: true, reasons: [] }, { goldenId: 'g2', pass: false, reasons: ['kırıldı'] }] });
+    await expect(applyEvolution(ctx, candidate, shadow, baseline))
+      .rejects.toThrow('golden gerileme (g2)');
     expect(existsSync(join(ctx.playbookDir, 'evo-abc.json'))).toBe(false); // kapı throw'dan ÖNCE — yazım yok
     expect(ctx.store.query({ type: 'ProposalCreated' })).toHaveLength(0);
+  });
+
+  // I1 (spec R10 binding): karma değişim — aggregate failed AZALIRken (1→0) bir görev geriliyor.
+  // Eski aggregate kapı bu geçişi onaylıyordu; per-task kapı g2 gerilemesini yakalar.
+  it('karma shadow (g1 fail→pass iyileşme, g2 pass→fail gerileme) → golden gerileme hatası + staging YAZILMAZ', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo6-'));
+    const ctx = makeCtx(dir);
+    writeShadowCandidates(ctx, [candidate]);
+    const baseline = baseSummary({ evalId: 'b1', failed: 1, score: 98.3, perTask: [{ goldenId: 'g1', pass: false, reasons: ['eski hata'] }, { goldenId: 'g2', pass: true, reasons: [] }] });
+    const shadow = baseSummary({ evalId: 's1', failed: 0, score: 100, perTask: [{ goldenId: 'g1', pass: true, reasons: [] }, { goldenId: 'g2', pass: false, reasons: ['yeni gerileme'] }] });
+    await expect(applyEvolution(ctx, candidate, shadow, baseline))
+      .rejects.toThrow('golden gerileme (g2)'); // gerileme listesinde yalnız g2 — g1 iyileşme sayılmaz
+    expect(existsSync(join(ctx.playbookDir, 'evo-abc.json'))).toBe(false);
+    expect(ctx.store.query({ type: 'ProposalCreated' })).toHaveLength(0);
+  });
+
+  // I1: baseline'da GÖRÜNMEYEN (yeni) golden görev shadow'da fail → o da gerilemedir
+  // (eksik baseline girdisi + shadow fail = reddiye; sessiz apply yolu yok).
+  it('baseline\'da olmayan golden görev shadow\'da fail → golden gerileme hatası', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo6b-'));
+    const ctx = makeCtx(dir);
+    writeShadowCandidates(ctx, [candidate]);
+    const baseline = baseSummary({ evalId: 'b1', failed: 0, score: 100, perTask: [{ goldenId: 'g1', pass: true, reasons: [] }] });
+    const shadow = baseSummary({ evalId: 's1', failed: 1, score: 50, perTask: [{ goldenId: 'g1', pass: true, reasons: [] }, { goldenId: 'g-yeni', pass: false, reasons: ['yeni görev kırıldı'] }] });
+    await expect(applyEvolution(ctx, candidate, shadow, baseline))
+      .rejects.toThrow('golden gerileme (g-yeni)');
+    expect(existsSync(join(ctx.playbookDir, 'evo-abc.json'))).toBe(false);
+  });
+
+  // I1: salt iyileşme (failed azalır, hiçbir görev pass→fail geçmez) → apply AKAR (kapı yalnız
+  // gerilemeyi keser; iyileşmeyi cezalandırmaz).
+  it('salt iyileşme (failed azalır, per-task gerileme yok) → apply başarılı', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo7-'));
+    const ctx = makeCtx(dir);
+    writeShadowCandidates(ctx, [candidate]);
+    const baseline = baseSummary({ evalId: 'b1', failed: 2, score: 96.7, perTask: [{ goldenId: 'g1', pass: false, reasons: ['r'] }, { goldenId: 'g2', pass: false, reasons: ['r'] }, { goldenId: 'g3', pass: true, reasons: [] }] });
+    const shadow = baseSummary({ evalId: 's1', failed: 0, score: 100, perTask: [{ goldenId: 'g1', pass: true, reasons: [] }, { goldenId: 'g2', pass: true, reasons: [] }, { goldenId: 'g3', pass: true, reasons: [] }] });
+    const ev = await applyEvolution(ctx, candidate, shadow, baseline);
+    expect(ev.type).toBe('ProposalCreated');
+    expect(existsSync(join(ctx.playbookDir, 'evo-abc.json'))).toBe(true);
   });
 
   it('gerileme yok → ProposalCreated (kind playbook-reviewer) + staging dosyası var; loadCandidate okur', async () => {
