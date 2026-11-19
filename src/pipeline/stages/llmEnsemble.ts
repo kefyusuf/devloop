@@ -1,10 +1,7 @@
 import type { ReviewStage, ReviewContext, StageResult } from '../../contracts/review.js';
 import type { Finding } from '../../contracts/schemas.js';
-import { SEVERITY_ORDER } from '../../contracts/schemas.js';
 import type { Policy } from '../../config/config.js';
-
-const key = (f: Finding) => `${f.evidence.file}:${f.evidence.line ?? '-'}:${f.category}`;
-const rank = (f: Finding) => SEVERITY_ORDER.indexOf(f.severity);
+import { findingKey, severityRank } from '../findingUtils.js';
 
 /**
  * T4 hüküm (brief snippet düzeltmesi): brief'in verbatim ensemble gövdesi `all`'ı aynen döndürüyordu;
@@ -16,6 +13,12 @@ const rank = (f: Finding) => SEVERITY_ORDER.indexOf(f.severity);
  * (b) downstream pipeline dedupe'ü kazananı birebir taşır ve bayrak asla düşmez, (c) §5.2.4'ün
  * "en şiddetli birebir korunur" değişmezi çapraz-stage kopyada da bozulmaz. randomUUID importı
  * kullanılmadığı için brief notuyla kaldırıldı.
+ *
+ * I2 (final fix wave, spec R2 "iki reviewer da işaretledi"): corroborated bayrağı yalnızca kopyanın
+ * KAYNAĞI kazananın stage'inden FARKLI bir stage ise set edilir — spec R2 doğrulama kanıtı iki
+ * BAĞIMSIZ reviewer (farklı stage) arasındaki uzlaşmadır; aynı stage'in kendi içindeki kopyası
+ * (aynı anahtar, farklı id) kanıt değildir ve bayrak false kalır. Anahtar+şiddet kuralı paylaşılan
+ * findingUtils'ten gelir (Minor #4: llmEnsemble/pipeline kopyasının sürüklenme riski giderildi).
  */
 export class LlmEnsembleStage implements ReviewStage {
   readonly name = 'llm-ensemble';
@@ -29,11 +32,15 @@ export class LlmEnsembleStage implements ReviewStage {
     const r2 = runAlt ? await this.alt.evaluate(ctx) : null;
     const byKey = new Map<string, Finding>();
     for (const f of [...r1.findings, ...(r2?.findings ?? [])]) {
-      const cur = byKey.get(key(f));
-      if (!cur) { byKey.set(key(f), f); continue; }
-      const survivor = rank(f) < rank(cur) ? f : cur;
-      byKey.set(key(f), survivor);
-      survivor.corroborated = true; // işaretleme RAW bulgu üzerinde, pipeline dedupe'ünden ÖNCE
+      const cur = byKey.get(findingKey(f));
+      if (!cur) { byKey.set(findingKey(f), f); continue; }
+      const survivor = severityRank(f) < severityRank(cur) ? f : cur;
+      const loser = survivor === f ? cur : f;
+      byKey.set(findingKey(f), survivor);
+      // I2 (R2): kanıt yalnız ÇAPRAZ-STAGE uzlaşmadır — kopya kazananın stage'iyle aynıysa
+      // (aynı reviewer'ın kendi tekrarı) corroborated bayrağı DOKUNULMAZ, false kalır.
+      // İşaretleme RAW bulgu üzerinde, pipeline dedupe'ünden ÖNCE.
+      if (loser.stage !== survivor.stage) survivor.corroborated = true;
     }
     const findings = [...byKey.values()];
     const status = r1.status === 'error' && (r2?.status ?? 'error') === 'error' ? 'error' : 'pass';

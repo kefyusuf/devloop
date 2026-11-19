@@ -35,6 +35,22 @@ describe('LlmEnsembleStage', () => {
     expect(r.findings).toHaveLength(1);
     expect(r.findings[0].corroborated).toBe(true);
   });
+  // I2 (final fix wave, spec R2 "iki reviewer da işaretledi"): corroborated kanıtı ÇAPRAZ-STAGE
+  // uzlaşmadır — aynı stage'in kendi içindeki aynı-anahtar kopyası kanıt DEĞİLDİR; alt koşsa bile
+  // bulgusuz dönerse survivor'ın bayrağı false kalır (eski davranış aynı-stage kopyayı da kanıt sayıyordu).
+  it('primary AYNI anahtarda İKİ bulgu + alt koşar ama bulgusuz → corroborated FALSE kalır', async () => {
+    const calls: string[] = [];
+    const ens = new LlmEnsembleStage(
+      mkStage('llm-reviewer', [F('1', 'llm-reviewer', 'required'), F('2', 'llm-reviewer', 'required')], calls),
+      mkStage('llm-reviewer-alt', [], calls),
+      policy,
+    );
+    const r = await ens.evaluate(ctx(20));
+    expect(calls).toEqual(['llm-reviewer', 'llm-reviewer-alt']); // alt koştu
+    expect(r.findings).toHaveLength(1); // ama dedupe tek kazanan bıraktı
+    expect(r.findings[0].corroborated).toBe(false); // R2: tek-stage uzlaşma kanıt değil
+    expect(r.findings[0].stage).toBe('llm-reviewer');
+  });
   it('risk ≥ eşik → bulgusuz da alt koşar', async () => {
     const calls: string[] = [];
     const ens = new LlmEnsembleStage(mkStage('llm-reviewer', [], calls), mkStage('llm-reviewer-alt', [], calls), policy);

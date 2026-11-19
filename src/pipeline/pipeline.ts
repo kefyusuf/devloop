@@ -1,7 +1,7 @@
 import type { ReviewStage, ReviewContext, StageResult } from '../contracts/review.js';
 import type { Finding } from '../contracts/schemas.js';
-import { SEVERITY_ORDER } from '../contracts/schemas.js';
 import type { Policy } from '../config/config.js';
+import { findingKey, severityRank } from './findingUtils.js';
 
 export interface PipelineResult {
   // I5 (final review): errorMessage kanıt zincirine taşınır — StageVerdict payload'u opsiyonel alır.
@@ -11,8 +11,6 @@ export interface PipelineResult {
   passed: boolean;
 }
 export class PipelineConfigError extends Error {}
-
-const rank = (s: Finding['severity']) => SEVERITY_ORDER.indexOf(s);
 
 export class ReviewPipeline {
   constructor(private readonly stages: ReviewStage[], private readonly policy: Policy) {}
@@ -48,10 +46,9 @@ export class ReviewPipeline {
   private dedupe(findings: Finding[]): Finding[] {
     const byKey = new Map<string, Finding>();
     for (const f of findings) {
-      const key = `${f.evidence.file}:${f.evidence.line ?? '-'}:${f.category}`;
-      const cur = byKey.get(key);
-      if (!cur || rank(f.severity) < rank(cur.severity)) byKey.set(key, f);
+      const cur = byKey.get(findingKey(f));
+      if (!cur || severityRank(f) < severityRank(cur)) byKey.set(findingKey(f), f);
     }
-    return [...byKey.values()].sort((a, b) => rank(a.severity) - rank(b.severity));
+    return [...byKey.values()].sort((a, b) => severityRank(a) - severityRank(b));
   }
 }
