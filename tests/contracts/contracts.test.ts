@@ -52,6 +52,22 @@ describe('event union (tip güvenli payload)', () => {
   });
 });
 
+describe('faz 3 kontratları', () => {
+  it('evidence.mutantId opsiyonel taşınır', () => {
+    const f = FindingSchema.parse({ id: 'f', stage: 'mutation-testing', category: 'mutation', severity: 'critical', confidence: 1, evidence: { file: 'a.ts', line: 3, mutantId: 'm5' } });
+    expect(f.evidence.mutantId).toBe('m5');
+  });
+  it('EvalRun gerçek payload doğrulanır', () => {
+    const env = makeEnvelope('r', '-', 'eval');
+    const ev = DevloopEventSchema.parse({ ...env, type: 'EvalRun', payload: {
+      evalId: 'e1', goldenCount: 3, passed: 2, failed: 1, score: 66.7,
+      perTask: [{ goldenId: 'g1', pass: true, reasons: [] }],
+      configSnapshot: { mode: 'production' },
+    } });
+    expect(ev.payload.comparedTo).toBeUndefined();
+  });
+});
+
 describe('faz 2 kontratları', () => {
   it('Finding.corroborated default false', () => {
     const f = FindingSchema.parse({ id: 'f', stage: 's', category: 'c', severity: 'nit', confidence: 1, evidence: { file: 'a' } });

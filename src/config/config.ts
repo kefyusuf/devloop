@@ -5,10 +5,16 @@ import { parse } from 'yaml';
 
 const Weights = z.object({ diffSize: z.number(), testDiff: z.number(), scopePaths: z.number() });
 const Llm = z.object({
-  provider: z.literal('anthropic'), model: z.string(), fallbackModel: z.string(),
+  provider: z.enum(['anthropic', 'openai']).default('anthropic'),
+  model: z.string(), fallbackModel: z.string(),
   maxTokens: z.number().int().positive(),
   backoffMs: z.number().min(0).default(500),
   costPer1kInput: z.number(), costPer1kOutput: z.number(),
+  openai: z.object({
+    model: z.string().default('gpt-4.1'), fallbackModel: z.string().default('gpt-4.1-mini'),
+    maxTokens: z.number().int().positive().default(8192),
+    costPer1kInput: z.number().min(0).default(0.0025), costPer1kOutput: z.number().min(0).default(0.01),
+  }).default({ model: 'gpt-4.1', fallbackModel: 'gpt-4.1-mini', maxTokens: 8192, costPer1kInput: 0.0025, costPer1kOutput: 0.01 }),
 });
 const Policy = z.object({
   version: z.number().int(),
@@ -23,6 +29,14 @@ const Policy = z.object({
   mutationScoreThreshold: z.number().min(0).max(100).default(60),
   mutationTimeoutMinutes: z.number().positive().default(15),
   l2MinDecisions: z.number().int().positive().default(100),
+  l3MinGoldenTasks: z.number().int().positive().default(50),
+  ciEnsembleRiskThreshold: z.number().min(0).max(100).default(20),
+  mutationScopeLow: z.number().int().positive().default(5),
+  mutationScopeHigh: z.number().int().positive().default(10),
+  sandbox: z.object({
+    mode: z.enum(['host', 'docker']).default('host'),
+    image: z.string().default('node:20-bookworm-slim'),
+  }).default({ mode: 'host', image: 'node:20-bookworm-slim' }),
   risk: z.object({ weights: Weights }),
   llm: Llm,
 });
@@ -36,9 +50,12 @@ const DEFAULT_POLICY: Policy = {
   advisory: ['llm-ensemble'], authorizedSkips: ['mutation-testing'],
   maxFixTours: 3, maxIterations: 10, budgetUsd: 2.0, wallClockMinutes: 30,
   ensembleRiskThreshold: 40, mutationScoreThreshold: 60, mutationTimeoutMinutes: 15, l2MinDecisions: 100,
+  l3MinGoldenTasks: 50, ciEnsembleRiskThreshold: 20, mutationScopeLow: 5, mutationScopeHigh: 10,
+  sandbox: { mode: 'host', image: 'node:20-bookworm-slim' },
   risk: { weights: { diffSize: 0.3, testDiff: 0.5, scopePaths: 0.2 } },
   llm: { provider: 'anthropic', model: 'claude-sonnet-4-5', fallbackModel: 'claude-haiku-3-5',
-    maxTokens: 8192, backoffMs: 500, costPer1kInput: 0.003, costPer1kOutput: 0.015 },
+    maxTokens: 8192, backoffMs: 500, costPer1kInput: 0.003, costPer1kOutput: 0.015,
+    openai: { model: 'gpt-4.1', fallbackModel: 'gpt-4.1-mini', maxTokens: 8192, costPer1kInput: 0.0025, costPer1kOutput: 0.01 } },
 };
 
 export function loadConfig(dir: string): { config: DevloopConfig; policy: Policy } {

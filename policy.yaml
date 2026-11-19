@@ -12,6 +12,11 @@ ensembleRiskThreshold: 40
 mutationScoreThreshold: 60
 mutationTimeoutMinutes: 15
 l2MinDecisions: 100
+l3MinGoldenTasks: 50
+ciEnsembleRiskThreshold: 20
+mutationScopeLow: 5
+mutationScopeHigh: 10
+sandbox: { mode: host, image: node:20-bookworm-slim }
 risk:
   weights: { diffSize: 0.3, testDiff: 0.5, scopePaths: 0.2 }
 llm:
@@ -22,3 +27,9 @@ llm:
   backoffMs: 500
   costPer1kInput: 0.003
   costPer1kOutput: 0.015
+  openai:
+    model: gpt-4.1
+    fallbackModel: gpt-4.1-mini
+    maxTokens: 8192
+    costPer1kInput: 0.0025
+    costPer1kOutput: 0.01

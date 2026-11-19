@@ -24,7 +24,12 @@ const P = {
     targetComponent: z.enum(['generator', 'reviewer']),
     parentDecisionEventIds: z.array(z.string()), parentLessonEventId: z.string().optional(),
   }),
-  EvalRun: z.object({ score: z.number(), comparison: z.record(z.unknown()) }),
+  EvalRun: z.object({
+    evalId: z.string(), goldenCount: z.number().int(), passed: z.number().int(), failed: z.number().int(),
+    score: z.number(),
+    perTask: z.array(z.object({ goldenId: z.string(), pass: z.boolean(), reasons: z.array(z.string()) })),
+    configSnapshot: z.record(z.unknown()), comparedTo: z.string().optional(),
+  }),
   ProposalCreated: z.object({
     proposalId: z.string(), kind: z.enum(['lint-rule', 'regression-test', 'policy-tweak']),
     category: z.string(), title: z.string(), content: z.record(z.unknown()),

@@ -6,7 +6,7 @@ export const FindingSeverity = z.enum(SEVERITY_ORDER);
 export const FindingSchema = z.object({
   id: z.string(), stage: z.string(), category: z.string(), severity: FindingSeverity,
   confidence: z.number().min(0).max(1),
-  evidence: z.object({ file: z.string(), line: z.number().int().optional() }),
+  evidence: z.object({ file: z.string(), line: z.number().int().optional(), mutantId: z.string().optional() }),
   suggestion: z.string().optional(),
   corroborated: z.boolean().default(false),
 });
