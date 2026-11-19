@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { join, resolve } from 'node:path';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { loadConfig } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
 import { AnthropicGateway } from '../gateway/gateway.js';
@@ -9,6 +9,7 @@ import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
 import { Orchestrator, BudgetedGateway } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
+import { runReviewDiff } from './reviewDiff.js';
 import { ReviewPipeline } from '../pipeline/pipeline.js';
 import { RiskTriageStage } from '../pipeline/stages/riskTriage.js';
 import { StaticGatesStage } from '../pipeline/stages/staticGates.js';
@@ -141,6 +142,38 @@ export function buildCli(workDir = process.cwd()): Command {
         parentFindingEventIds: (opts.findings ?? '').split(',').filter(Boolean),
       });
       console.log('Karar kaydedildi.');
+    });
+
+  // R6 (faz 2 T8): CI trigger mode — review-diff. Uygulanmamış PR diff'i (unified) parse edilip
+  // artifact olarak pipeline'a verilir; kanıt aynı store'a yazılır (runId `ci-<task>`).
+  // Exit sözleşmesi: 0 = gate'ler geçti + critical bulgu yok, 1 = gate fail VEYA critical bulgu,
+  // 2 = yalnız advisory bulgular. Komut process.exitCode'u string olarak set eder (CI yakalar).
+  // Pipeline kurulumu `run` komutuyla aynı desen (gerçek stage'ler; policy.yaml hangi stage'lerin
+  // koşacağını belirler — CI'da LLM çağrısı için ANTHROPIC_API_KEY ortam değişkeni gerekir).
+  program.command('review-diff').description('PR diff review (CI trigger mode — diff uygulanmaz)')
+    .requiredOption('--diff <path>', 'unified diff dosyası; - ise stdin')
+    .requiredOption('--task <id>', 'görev/kimlik (ör. pr-12)')
+    .action(async (opts: { diff: string; task: string }) => {
+      const { policy } = loadConfig(repoDir());
+      const diffText = opts.diff === '-' ? readFileSync(0, 'utf8') : readFileSync(opts.diff, 'utf8');
+      const mem = memory();
+      const gateway = new BudgetedGateway(new AnthropicGateway(policy), policy.budgetUsd, () => {});
+      const adapter = new TypeScriptAdapter();
+      const ensemble = new LlmEnsembleStage(
+        new LlmReviewerStage(gateway, mem),
+        new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons: mem }),
+        policy,
+      );
+      const pipeline = new ReviewPipeline([
+        new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
+        new SecretScanStage(), new MutationStage(policy),
+        ensemble,
+      ], policy);
+      const r = await runReviewDiff({
+        diffText, taskSpecId: opts.task, pipeline, store: store(), policy, repoPath: repoDir(),
+      });
+      console.log(`review-diff: exit=${r.exitCode} gateFailed=${r.gateFailed ?? '-'} findings=${r.findings.length}`);
+      process.exitCode = String(r.exitCode);
     });
   return program;
 }

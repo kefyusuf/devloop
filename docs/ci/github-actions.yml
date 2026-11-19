@@ -1,0 +1,14 @@
+name: devloop review
+on: [pull_request]
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install && npm run build   # devloop kurulumu (repo içine linkli kurulum varsayımı — README)
+      - run: git diff origin/main...HEAD > pr.diff
+      - run: npx tsx src/index.ts review-diff --diff pr.diff --task pr-${{ github.event.number }}
+        env: { ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} }
