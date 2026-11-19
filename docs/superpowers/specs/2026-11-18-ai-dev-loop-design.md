@@ -1,7 +1,7 @@
 # AI Geliştirme Döngüsü Sistemi — Tasarım Dokümanı (Spec)
 
 - **Tarih:** 2026-11-18
-- **Durum:** Spec onaylandı (2026-11-18, kullanıcı); uygulama planı yazılıyor
+- **Durum:** v1 tamamlandı ve main'e merge edildi (51398c2); Revizyon 2 (faz 2) tasarım onay aşamasında
 - **Çalışma adı:** `devloop` *(placeholder — karar kutusu 9.3)*
 - **Ölçek:** Mimari (architectural) — yeni sistem, yeşil alan
 
@@ -302,7 +302,7 @@ Faz 1 tamamlandı (merge 51398c2, 99/99 test). Faz 2 kapsamı: **TAM** — aşa�
 ### R1 — Bütçe doğru sayımı (A6 tamamlanması)
 
 - `GenerationContext` yeni alan: `gateway: LlmGateway`. Orchestrator **budgeted** örneği bu alandan backend'e aktarır; `LlmGeneratorBackend` `ctx.gateway ?? this.gateway` kullanır (ctor fallback geriye dönük uyum için kalır).
-- Orchestrator'daki per-tour kanarya çağrısı **silinir**; spend doğrudan `BudgetedGateway.spent` üzerinden okunur. Bütçe artık generator+reviewer gerçek harcamasını sayar.
+- Kalan iş yalnız bu bağlantıdır: kanarya çağrısı v1 final fix wave'inde zaten kaldırıldı; bu revizyonla **gerçek** backend/reviewer harcaması da budgeted örnek üzerinden akar (spend `BudgetedGateway.spent`'ten okunur).
 - Çelişki notu (v1 ledger): fake backend'lerin gateway'i çağırması test gereksinimi olarak kalır — gerçek backend davranışını yansıtır.
 
 ### R2 — LLM Ensemble (heterojen çift)
