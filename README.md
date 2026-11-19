@@ -119,10 +119,12 @@ devloop learn apply <proposalId>    # öneriyi yalnız <repo>/.devloop/proposals
 
 ### Dayanıklılık (R4)
 
-- Gateway geçici hatalarda üstel backoff (`llm.backoffMs`, varsayılan 500) ile retry + fallback model;
-  tükeniş `GatewayError` → run-level suspend (panic), resume ile sürer.
-- Gate config parmak izi (`gateConfigHash`: tsconfig/eslint config içerik sha256'sı) RunStarted kanıtına
-  yazılır; resume'da config kayması panic'tir — sessiz politika karışımı yok.
+- Gateway geçici hatalarda doğrusal backoff (`backoffMs × deneme`; `llm.backoffMs`, varsayılan 500;
+  4 sn tavan) ile retry + fallback model; tükeniş `GatewayError` → run-level suspend (panic), resume
+  ile sürer.
+- Gate config parmak izi (`gateConfigHash`: tsconfig/eslint config içerik sha256'sı) RunStarted
+  kanıtına yazılır — YALNIZ kanıt/izlenebilirlik amaçlıdır; resume'daki panic kararı YALNIZ policyHash
+  karşılaştırmasıdır (gateConfigHash değişimi koşumu durdurmaz — sessiz politika karışımı yok).
 
 ### Faz 2 policy alanları
 
@@ -131,7 +133,7 @@ devloop learn apply <proposalId>    # öneriyi yalnız <repo>/.devloop/proposals
 | `ensembleRiskThreshold` | `40` | Risk skoru bunun üzerindeyse alt reviewer bulgusuz da koşar |
 | `mutationScoreThreshold` | `60` | Stryker mutation skorunun altı → critical bulgu + gate fail |
 | `mutationTimeoutMinutes` | `15` | Stryker koşum zaman aşımı (aşım fail-closed) |
-| `llm.backoffMs` | `500` | Gateway retry backoff tabanı (üstel) |
+| `llm.backoffMs` | `500` | Gateway retry backoff tabanı (doğrusal: `backoffMs × deneme`) |
 | `l2MinDecisions` | `100` | L2 öneri üretimi için gereken minimum insan karar sayısı |
 
 Tümü `.default()` ile geldiğinden mevcut `policy.yaml` dosyaları geriye dönük uyumludur; policy

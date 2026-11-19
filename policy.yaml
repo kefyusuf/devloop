@@ -1,6 +1,8 @@
 version: 1
-gates: [risk-triage, static-gates, tests, secret-scan]
-advisory: [llm-ensemble, mutation-testing]
+# Final fix wave (review Minor #1): mutation-testing gate'tir (spec R3) — advisory'den gates'e taşındı;
+# authorizedSkips unchanged (stryker.config.json'suz repo'lar yetkili skip ile atlar).
+gates: [risk-triage, static-gates, tests, secret-scan, mutation-testing]
+advisory: [llm-ensemble]
 authorizedSkips: [mutation-testing]   # A2: yalnız burada listelenen gate skip olabilir
 maxFixTours: 3
 maxIterations: 10

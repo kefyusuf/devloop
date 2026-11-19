@@ -29,9 +29,11 @@ const Policy = z.object({
 export type Policy = z.infer<typeof Policy>;
 
 export interface DevloopConfig { apiKeyEnvVar: string }
+// Final fix wave (review Minor #1): mutation-testing gate'tir (spec R3) — DEFAULT_POLICY'de de
+// advisory'den gates'e taşındı; authorizedSkips unchanged (stryker.config.json'suz repo skip eder).
 const DEFAULT_POLICY: Policy = {
-  version: 1, gates: ['risk-triage', 'static-gates', 'tests', 'secret-scan'],
-  advisory: ['llm-ensemble', 'mutation-testing'], authorizedSkips: ['mutation-testing'],
+  version: 1, gates: ['risk-triage', 'static-gates', 'tests', 'secret-scan', 'mutation-testing'],
+  advisory: ['llm-ensemble'], authorizedSkips: ['mutation-testing'],
   maxFixTours: 3, maxIterations: 10, budgetUsd: 2.0, wallClockMinutes: 30,
   ensembleRiskThreshold: 40, mutationScoreThreshold: 60, mutationTimeoutMinutes: 15, l2MinDecisions: 100,
   risk: { weights: { diffSize: 0.3, testDiff: 0.5, scopePaths: 0.2 } },

@@ -52,6 +52,10 @@ describe('faz 2 policy alanları', () => {
     expect(policy.mutationTimeoutMinutes).toBe(15);
     expect(policy.llm.backoffMs).toBe(500);
     expect(policy.l2MinDecisions).toBe(100);
-    expect(policy.advisory).toEqual(['llm-ensemble', 'mutation-testing']);
+    // hüküm: final fix wave (review Minor #1) — mutation-testing gate'tir (spec R3); DEFAULT_POLICY'de
+    // advisory'den gates'e taşındı. authorizedSkips unchanged → config-less/stryker'sız repo skip eder.
+    expect(policy.gates).toEqual(['risk-triage', 'static-gates', 'tests', 'secret-scan', 'mutation-testing']);
+    expect(policy.advisory).toEqual(['llm-ensemble']);
+    expect(policy.authorizedSkips).toEqual(['mutation-testing']);
   });
 });
