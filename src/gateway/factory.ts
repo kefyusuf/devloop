@@ -8,3 +8,11 @@ import { OpenAIGateway } from './openai.js';
 export function createGateway(policy: Policy): LlmGateway {
   return policy.llm.provider === 'openai' ? new OpenAIGateway(policy) : new AnthropicGateway(policy);
 }
+
+// I3 (final fix wave): alt (ikincil) reviewer modeli provider-aware — alt reviewer stage'lerine
+// geçilen `model` override'ı Anthropic namespace'inde hardcode'landığında openai provider'da
+// YANLIŞ model (anthropic fallbackModel adı) OpenAI gateway'e gidiyordu. Tek kapı: openai
+// provider'da openai.fallbackModel, aksi halde anthropic fallbackModel.
+export function altModelFor(policy: Policy): string {
+  return policy.llm.provider === 'openai' ? policy.llm.openai.fallbackModel : policy.llm.fallbackModel;
+}

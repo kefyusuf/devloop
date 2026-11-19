@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { loadConfig, type Policy } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
-import { createGateway } from '../gateway/factory.js';
+import { createGateway, altModelFor } from '../gateway/factory.js';
 import { LlmGeneratorBackend } from '../generator/generator.js';
 import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
@@ -80,7 +80,8 @@ export function buildCli(workDir = process.cwd()): Command {
     const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
     const ensemble = new LlmEnsembleStage(
       new LlmReviewerStage(gateway, reviewerLessons), // A4: reviewer dersleri + I2 applied playbook'lar
-      new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons }),
+      // I3: alt model provider-aware (anthropic/openai) — hardcode anthropic fallbackModel yerine
+      new LlmReviewerAltStage(gateway, { model: altModelFor(policy), reviewerLessons }),
       policy,
     );
     const pipeline = new ReviewPipeline([
@@ -221,7 +222,7 @@ export function buildCli(workDir = process.cwd()): Command {
       const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
       const ensemble = new LlmEnsembleStage(
         new LlmReviewerStage(gateway, reviewerLessons),
-        new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons }),
+        new LlmReviewerAltStage(gateway, { model: altModelFor(policy), reviewerLessons }), // I3: provider-aware alt model
         policy,
       );
       const gateOverride = { ...policy, gates: ['risk-triage', 'static-gates', 'tests', 'secret-scan', 'mutation-testing'], advisory: [] };
@@ -269,7 +270,7 @@ export function buildCli(workDir = process.cwd()): Command {
         const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
         stages.push(new LlmEnsembleStage(
           new LlmReviewerStage(gateway, reviewerLessons),
-          new LlmReviewerAltStage(gateway, { model: effPolicy.llm.fallbackModel, reviewerLessons }),
+          new LlmReviewerAltStage(gateway, { model: altModelFor(effPolicy), reviewerLessons }), // I3: provider-aware alt model
           effPolicy,
         ));
       }
@@ -323,7 +324,7 @@ export function buildCli(workDir = process.cwd()): Command {
         new SecretScanStage(), new MutationStage(policy),
         new LlmEnsembleStage(
           new LlmReviewerStage(gateway, provider),
-          new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons: provider }),
+          new LlmReviewerAltStage(gateway, { model: altModelFor(policy), reviewerLessons: provider }), // I3: provider-aware alt model
           policy,
         ),
       ], policy);
