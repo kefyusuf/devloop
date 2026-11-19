@@ -31,10 +31,10 @@ const runToolMock = vi.mocked(adapter.runTool);
 
 const policy = () => loadConfig(mkdtempSync(join(tmpdir(), 'pol-'))).policy; // DEFAULT_POLICY: eşik 60, timeout 15dk
 
-const mkCtx = (repoPath: string, files: Array<{ path: string; content: string }> = []): ReviewContext => ({
+const mkCtx = (repoPath: string, files: Array<{ path: string; content: string }> = [], riskScore = 10): ReviewContext => ({
   taskSpec: { id: 't', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
   artifact: { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files },
-  repoPath, riskScore: 10,
+  repoPath, riskScore,
 });
 
 /** stryker.config.json'I olan (ama stryker kurulu olmayan) minimal fixture repo. */
@@ -150,21 +150,39 @@ describe('MutationStage birim', () => {
     await expect(new MutationStage(policy()).evaluate(mkCtx(dir, [{ path: 'src/a.ts', content: 'x' }]))).rejects.toThrow('EPIPE');
   });
 
-  it('--mutate artifact ilk 10 dosyayı alır + runTool timeout policy MutationTimeout ile çağrılır', async () => {
+  // hüküm (R11, faz 3 T5): --mutate sabit `slice(0, 10)` yerine risk-ölçekli kapsam —
+  // scope = riskScore < 30 ? mutationScopeLow(5) : mutationScopeHigh(10); dosyalar içerik-uzunluğu
+  // DESC sıralı (triaj proxy: en büyük içerik önce — deterministik; JS sort stabil, eşitlikte orijinal sıra).
+  it('LOW-risk (riskScore 10) → --mutate en uzun içerikli ilk mutationScopeLow(5) dosya + timeout policy MutationTimeout', async () => {
     const dir = repoWithConfig();
     resolveBinMock.mockReturnValueOnce('C:/fake/bin/stryker.js');
     runToolMock.mockResolvedValueOnce(toolOut('mutation score 90.00%\nAll files |  90.00 |'));
-    const files = Array.from({ length: 12 }, (_, i) => ({ path: `src/f${i}.ts`, content: 'x' }));
-    const p = policy(); // mutationTimeoutMinutes: 15
-    const r = await new MutationStage(p).evaluate(mkCtx(dir, files));
+    // 12 dosyalı artifact, içerik uzunlukları f0 (1) … f11 (12) — en uzun f11
+    const files = Array.from({ length: 12 }, (_, i) => ({ path: `src/f${i}.ts`, content: 'x'.repeat(i + 1) }));
+    const p = policy(); // mutationScopeLow: 5, mutationTimeoutMinutes: 15
+    const r = await new MutationStage(p).evaluate(mkCtx(dir, files)); // riskScore 10 (LOW) — mkCtx varsayılanı
     expect(r.status).toBe('pass');
     expect(runToolMock).toHaveBeenCalledOnce();
     const [repo, bin, args, timeoutMs] = runToolMock.mock.calls[0];
     expect(repo).toBe(dir);
     expect(bin).toBe('C:/fake/bin/stryker.js');
-    // hüküm: I1 (R3) — json reporter eklendi (survived mutant kanıtı reports/mutation/ raporundan okunur)
-    expect(args).toEqual(['run', '--mutate', 'src/f0.ts,src/f1.ts,src/f2.ts,src/f3.ts,src/f4.ts,src/f5.ts,src/f6.ts,src/f7.ts,src/f8.ts,src/f9.ts', '--concurrency', '1', '--reporters', 'clear-text,json']);
+    // tam 5 yol, en uzun içerik önce: f11 (12) → f7 (8)
+    expect(args).toEqual(['run', '--mutate', 'src/f11.ts,src/f10.ts,src/f9.ts,src/f8.ts,src/f7.ts', '--concurrency', '1', '--reporters', 'clear-text,json']);
     expect(timeoutMs).toBe(p.mutationTimeoutMinutes * 60_000);
+  });
+
+  it('HIGH-risk (riskScore 50) → --mutate en uzun içerikli ilk mutationScopeHigh(10) dosya', async () => {
+    const dir = repoWithConfig();
+    resolveBinMock.mockReturnValueOnce('C:/fake/bin/stryker.js');
+    runToolMock.mockResolvedValueOnce(toolOut('mutation score 90.00%\nAll files |  90.00 |'));
+    const files = Array.from({ length: 12 }, (_, i) => ({ path: `src/f${i}.ts`, content: 'x'.repeat(i + 1) }));
+    const p = policy(); // mutationScopeHigh: 10
+    const r = await new MutationStage(p).evaluate(mkCtx(dir, files, 50)); // HIGH: 50 ≥ 30
+    expect(r.status).toBe('pass');
+    expect(runToolMock).toHaveBeenCalledOnce();
+    const args = runToolMock.mock.calls[0][2];
+    // tam 10 yol, aynı DESC sıra: f11 … f2
+    expect(args).toEqual(['run', '--mutate', 'src/f11.ts,src/f10.ts,src/f9.ts,src/f8.ts,src/f7.ts,src/f6.ts,src/f5.ts,src/f4.ts,src/f3.ts,src/f2.ts', '--concurrency', '1', '--reporters', 'clear-text,json']);
   });
 });
 

@@ -1,20 +1,39 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { parseDiff, runReviewDiff } from '../../src/shell/reviewDiff.js';
 import { buildCli } from '../../src/shell/cli.js';
 import { ReviewPipeline } from '../../src/pipeline/pipeline.js';
 import { VerdictStore, validateChain } from '../../src/store/store.js';
 import { loadConfig } from '../../src/config/config.js';
+import { computeRisk } from '../../src/pipeline/stages/riskTriage.js';
 import type { ReviewStage } from '../../src/contracts/review.js';
 import type { Finding } from '../../src/contracts/schemas.js';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+// R11 (faz 3 T5) CLI hüküm: review-diff assembly'si artık SABİT beş gate'i içerir (policy gates/advisory
+// override ile) — CLI seviyesi testlerdeki geçici fixture dizinlerinde gerçek eslint/tsc/vitest
+// koşulmamalıdır; TypeScriptAdapter temiz stub ile değiştirilir (yalnız CLI yolunu etkiler — birim
+// fake stage'ler adapter kullanmaz; resolveBin/runTool/parsers gerçek implementasyon kalır).
+vi.mock('../../src/adapters/typescript/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/adapters/typescript/index.js')>();
+  class CleanAdapterStub {
+    readonly id = 'typescript';
+    async lint() { return []; }
+    async typecheck() { return []; }
+    async runTests() { return { passed: true, output: 'stub-clean', findings: [] as Finding[] }; }
+  }
+  return { ...actual, TypeScriptAdapter: CleanAdapterStub as unknown as typeof actual.TypeScriptAdapter };
+});
+
 const basePolicy = loadConfig(process.cwd()).policy;
 // Pre-flight hüküm: exit kodu testleri policy-overridden pipeline ile — fake stage'ler (gerçek
 // LLM/stryker çağrısı yok). Exit 0/1: gates ['risk-triage'], advisory []. Exit 2: geçen advisory fake.
 const ciPolicy = { ...basePolicy, gates: ['risk-triage'], advisory: [] };
 const advPolicy = { ...basePolicy, gates: ['risk-triage'], advisory: ['fake-advisory'] };
+// R11 hüküm: runReviewDiff ÇİFT pipeline alır — gatePipeline ensemble'sız (advisory: [] override),
+// fullPipeline policy advisory'li; ikisi aynı stage örneklerini paylaşır (CLI assembly deseni).
+const GATES = ['risk-triage', 'static-gates', 'tests', 'secret-scan', 'mutation-testing'];
 
 function stage(name: string, kind: 'gate' | 'advisory', status: 'pass' | 'fail' | 'error' | 'skipped', findings: Finding[] = []): ReviewStage {
   return { name, kind, evaluate: async () => ({ status, findings, durationMs: 1 }) };
@@ -28,7 +47,10 @@ async function runWith(stages: ReviewStage[], policy = ciPolicy) {
   const dir = mkdtempSync(join(tmpdir(), 'reviewdiff-'));
   const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
   const result = await runReviewDiff({
-    diffText: DIFF, taskSpecId: 't1', pipeline: new ReviewPipeline(stages, policy), store, policy, repoPath: dir,
+    diffText: DIFF, taskSpecId: 't1',
+    gatePipeline: new ReviewPipeline(stages, { ...policy, advisory: [] }),
+    fullPipeline: new ReviewPipeline(stages, policy),
+    store, policy, repoPath: dir,
   });
   return { result, store, dir };
 }
@@ -80,7 +102,9 @@ describe('review-diff exit kodları', () => {
     expect(validateChain(store.readAll()).ok).toBe(true);
     // I3 idempotency: tekrarlı CI koşumu (aynı runId) İKİNCİ RunStarted yazmaz
     await runReviewDiff({
-      diffText: DIFF, taskSpecId: 't1', pipeline: new ReviewPipeline([stage('risk-triage', 'gate', 'pass')], ciPolicy),
+      diffText: DIFF, taskSpecId: 't1',
+      gatePipeline: new ReviewPipeline([stage('risk-triage', 'gate', 'pass')], { ...ciPolicy, advisory: [] }),
+      fullPipeline: new ReviewPipeline([stage('risk-triage', 'gate', 'pass')], ciPolicy),
       store, policy: ciPolicy, repoPath: dir,
     });
     expect(store.query({ runId: 'ci-t1', type: 'RunStarted' })).toHaveLength(1);
@@ -108,8 +132,81 @@ describe('review-diff exit kodları', () => {
   });
 });
 
+// R11 (faz 3 T5): risk-tiered tetikleme — RiskTriageStage ÖNCE tek başına koşar (risk skoru hesaplar);
+// skor < policy.ciEnsembleRiskThreshold → gatePipeline, değilse fullPipeline koşar. Fixture skorları
+// computeRisk ile deterministik: LOW = docs yolu (testDiff 0, scopePaths 0) + 161 diff satırı →
+// round(100*0.3*161/500) = 10; HIGH = tests yolu (testDiff 1) + 5 satır → round(100*(0.3*5/500+0.5)) = 50.
+describe('review-diff risk-tiered seçim (R11)', () => {
+  const LOW_DIFF = ['--- a/docs/notes.md', '+++ b/docs/notes.md', '@@ -0,0 +1,158 @@',
+    ...Array.from({ length: 158 }, (_, i) => `+satır ${i}`)].join('\n');
+  const TEST_DIFF = ['--- a/tests/x.test.ts', '+++ b/tests/x.test.ts', '@@ -1 +1,2 @@', ' const a=1;', '+const b=2;'].join('\n');
+
+  const asArtifact = (diffText: string) => ({
+    diff: diffText, intent: 'ci-review', rejectedAlternatives: [] as string[], testEvidence: 'ci',
+    files: parseDiff(diffText).map((f) => ({ path: f.path, content: f.addedContent })),
+  });
+
+  const ensembleSpy = () => {
+    const calls = { evaluate: 0 };
+    const s: ReviewStage = {
+      name: 'llm-ensemble', kind: 'advisory',
+      evaluate: async () => { calls.evaluate += 1; return { status: 'pass', findings: [], durationMs: 1 }; },
+    };
+    return { stage: s, calls };
+  };
+
+  function runTiered(diffText: string) {
+    const dir = mkdtempSync(join(tmpdir(), 'reviewdiff-tier-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const ens = ensembleSpy();
+    const gateStages = GATES.map((n) => stage(n, 'gate', 'pass'));
+    const gatePipeline = new ReviewPipeline(gateStages, { ...basePolicy, gates: GATES, advisory: [] });
+    const fullPipeline = new ReviewPipeline([...gateStages, ens.stage], { ...basePolicy, gates: GATES, advisory: ['llm-ensemble'] });
+    return {
+      run: () => runReviewDiff({ diffText, taskSpecId: 't1', gatePipeline, fullPipeline, store, policy: basePolicy, repoPath: dir }),
+      store, ens, dir,
+    };
+  }
+
+  it('(a) risk 10 (< eşik 20) → gatePipeline koşar: ensemble HİÇ çağrılmaz, gates koşar, exit 0', async () => {
+    expect(computeRisk(asArtifact(LOW_DIFF), basePolicy).score).toBe(10); // fixture sözleşmesi pin'li
+    const { run: doRun, store, ens } = runTiered(LOW_DIFF);
+    const result = await doRun();
+    expect(ens.calls.evaluate).toBe(0); // LOW risk → fullPipeline'a hiç girilmez (spy sayaç)
+    expect(result.exitCode).toBe(0);
+    expect(result.gateFailed).toBeNull();
+    expect(result.findings).toEqual([]);
+    const verdictStages = store.query({ runId: 'ci-t1', type: 'StageVerdict' }).map((e) => e.payload.stage);
+    expect(verdictStages).toContain('static-gates'); // gatePipeline GERÇEKTEN koştu
+    expect(verdictStages).not.toContain('llm-ensemble');
+    // bağımsız triaj koşumu + seçilen pipeline'ın kendi risk-triage'i → iki risk-triage verdict'i
+    expect(verdictStages.filter((s) => s === 'risk-triage')).toHaveLength(2);
+    expect(validateChain(store.readAll()).ok).toBe(true); // (c)
+  });
+
+  it('(b) risk 50 (≥ eşik 20) → fullPipeline: ensemble tam 1 kez, exit 2 + test-diff bulgusu', async () => {
+    expect(computeRisk(asArtifact(TEST_DIFF), basePolicy).score).toBe(50); // fixture sözleşmesi pin'li
+    const { run: doRun, store, ens } = runTiered(TEST_DIFF);
+    const result = await doRun();
+    expect(ens.calls.evaluate).toBe(1); // HIGH risk → tam bir ensemble koşumu
+    expect(result.exitCode).toBe(2);
+    expect(result.gateFailed).toBeNull();
+    // test-diff bulgusu kaybolmaz: bağımsız triaj koşumunun bulgusu kanıta akar (§5.2.4 anahtar kuralı)
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].category).toBe('test-diff');
+    expect(result.findings[0].stage).toBe('risk-triage');
+    const emitted = store.query({ runId: 'ci-t1', type: 'FindingEmitted' });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].actor).toBe('risk-triage');
+    expect(emitted[0].payload.parentArtifactEventId).toBe(store.query({ runId: 'ci-t1', type: 'ArtifactProduced' })[0].event_id);
+    expect(validateChain(store.readAll()).ok).toBe(true); // (c)
+  });
+});
+
 describe('review-diff CLI (buildCli → process.exitCode)', () => {
   // policy.yaml tam şema ister (zod) — yük/tipler minimal geçerli politika.
+  // hüküm (R11, faz 3 T5): review-diff assembly'si policy gates/advisory'i OVERRIDE eder (sabit beş gate
+  // + advisory override) — gates paramı artık yalnız şema geçerliliği içindir.
   const policyYaml = (gates: string[]) => `version: 1
 gates: [${gates.join(', ')}]
 advisory: []
@@ -129,14 +226,19 @@ llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costP
   }
 
   it('exit 0: gates pass + bulgu yok → process.exitCode "0"', async () => {
-    const dir = tmpRepo(['risk-triage'], DIFF);
+    // hüküm (R11): LOW-risk fixture (docs yolu — testDiff 0, scopePaths 0, 5 satır → risk 0 < eşik 20)
+    // → gatePipeline koşar; fullPipeline/ensemble'a hiç girilmez (API anahtarı gerekmez).
+    const dir = tmpRepo(['risk-triage'], ['--- a/docs/notes.md', '+++ b/docs/notes.md', '@@ -1 +1,2 @@', ' satır', '+yeni satır'].join('\n'));
     const prev = process.exitCode;
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'review-diff', '--diff', join(dir, 'pr.diff'), '--task', 't1']);
       expect(Number(process.exitCode)).toBe(0); // vitest worker exitCode'u number'a çevirir — üretimde String('0') kalır
     } finally { process.exitCode = prev; }
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
-    expect(store.query({ runId: 'ci-t1', type: 'StageVerdict' })[0].payload.status).toBe('pass');
+    expect(store.query({ runId: 'ci-t1', type: 'StageVerdict' })[0].payload.status).toBe('pass'); // bağımsız triaj verdict'i ilk sırada
+    const verdictStages = store.query({ runId: 'ci-t1', type: 'StageVerdict' }).map((e) => e.payload.stage);
+    expect(verdictStages).toContain('static-gates'); // sabit beş gate koşar (policy gates override)
+    expect(verdictStages).not.toContain('llm-ensemble'); // LOW risk → ensemble koşmaz
     expect(validateChain(store.readAll()).ok).toBe(true);
   });
 
@@ -152,16 +254,24 @@ llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costP
     expect(secretVerdict?.payload.status).toBe('fail');
   });
 
+  // hüküm (R11): eski exit-2 testi artık FULL yolu koşturur (test dosyası → risk 50 ≥ eşik 20 →
+  // fullPipeline + ensemble). Assertion'lar korunur; assembly adaptasyonu: ensemble fail-fast
+  // GatewayError verir (advisory — gate düşürmez) diye API anahtarı koşum süresince silinir.
   it('exit 2: test dosyası ekleyen diff → risk-triage required bulgu → process.exitCode "2"', async () => {
     const dir = tmpRepo(['risk-triage'], ['--- a/tests/x.test.ts', '+++ b/tests/x.test.ts', '@@ -1 +1,2 @@', ' const a=1;', '+const b=2;'].join('\n'));
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
     const prev = process.exitCode;
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'review-diff', '--diff', join(dir, 'pr.diff'), '--task', 't1']);
       expect(Number(process.exitCode)).toBe(2);
-    } finally { process.exitCode = prev; }
+    } finally {
+      process.exitCode = prev;
+      if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
+    }
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     const findings = store.query({ runId: 'ci-t1', type: 'FindingEmitted' });
-    expect(findings.length).toBe(1);
+    expect(findings.length).toBe(1); // bağımsız triaj + pipeline içi triaj aynı anahtar → tek bulgu (§5.2.4)
     expect(findings[0].payload.finding.category).toBe('test-diff');
   });
 });

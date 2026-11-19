@@ -69,7 +69,15 @@ export class MutationStage implements ReviewStage {
     }
     const bin = resolveBin(ctx.repoPath, '@stryker-mutator/core/bin/stryker.js');
     if (!bin) throw new Error('stryker çözümlenemedi (fail-closed)');
-    const mutate = ctx.artifact.files.slice(0, 10).map((f) => f.path).join(',');
+    // R11 (faz 3 T5): risk-tiered kapsam — sabit ilk-10 yerine risk-ölçekli seçim. Triaj proxy'si
+    // olarak dosyalar içerik-uzunluğu DESC sıralanır (deterministik: JS sort stabil, eşit uzunlukta
+    // orijinal artifact sırası korunur), sonra scope kadar dilim alınır.
+    const scope = ctx.riskScore < 30 ? this.policy.mutationScopeLow : this.policy.mutationScopeHigh;
+    const mutate = [...ctx.artifact.files]
+      .sort((a, b) => b.content.length - a.content.length) // triaj proxy: en büyük içerik önce (deterministik)
+      .slice(0, scope)
+      .map((f) => f.path)
+      .join(',');
     // I1 (R3): json reporter eklendi — survived mutant kanıtı `reports/mutation/` raporundan okunur
     // (Stryker 8.7.1 varsayılan dosya adı `mutation.json`; eski `results.json` adı da aranır).
     const res = await runTool(ctx.repoPath, bin, ['run', '--mutate', mutate, '--concurrency', '1', '--reporters', 'clear-text,json'], this.policy.mutationTimeoutMinutes * 60_000);

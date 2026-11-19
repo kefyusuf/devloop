@@ -187,18 +187,25 @@ export function buildCli(workDir = process.cwd()): Command {
       const mem = memory();
       const gateway = new BudgetedGateway(new AnthropicGateway(policy), policy.budgetUsd, () => {});
       const adapter = new TypeScriptAdapter();
+      // R11 (faz 3 T5): risk-tiered çift pipeline — stage örnekleri paylaşımlı kurulur; runReviewDiff
+      // triaj skoru < ciEnsembleRiskThreshold → gatePipeline, değilse fullPipeline seçer.
+      // Gate pipeline'ı ensemble'sızdır (advisory: [] override — low-risk CI koşumu LLM harcamaz);
+      // full pipeline aynı gates + llm-ensemble advisory override ile koşar.
+      const gateStages = [
+        new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
+        new SecretScanStage(), new MutationStage(policy),
+      ];
       const ensemble = new LlmEnsembleStage(
         new LlmReviewerStage(gateway, mem),
         new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons: mem }),
         policy,
       );
-      const pipeline = new ReviewPipeline([
-        new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-        new SecretScanStage(), new MutationStage(policy),
-        ensemble,
-      ], policy);
+      const gateOverride = { ...policy, gates: ['risk-triage', 'static-gates', 'tests', 'secret-scan', 'mutation-testing'], advisory: [] };
+      const fullOverride = { ...policy, gates: ['risk-triage', 'static-gates', 'tests', 'secret-scan', 'mutation-testing'], advisory: ['llm-ensemble'] };
+      const gatePipeline = new ReviewPipeline(gateStages, gateOverride);
+      const fullPipeline = new ReviewPipeline([...gateStages, ensemble], fullOverride);
       const r = await runReviewDiff({
-        diffText, taskSpecId: opts.task, pipeline, store: store(), policy, repoPath: repoDir(),
+        diffText, taskSpecId: opts.task, gatePipeline, fullPipeline, store: store(), policy, repoPath: repoDir(),
       });
       console.log(`review-diff: exit=${r.exitCode} gateFailed=${r.gateFailed ?? '-'} findings=${r.findings.length}`);
       process.exitCode = String(r.exitCode);

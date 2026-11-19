@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import type { Finding } from '../contracts/schemas.js';
 import type { ReviewContext } from '../contracts/review.js';
 import type { ReviewPipeline } from '../pipeline/pipeline.js';
+import { RiskTriageStage } from '../pipeline/stages/riskTriage.js';
+import { findingKey, severityRank } from '../pipeline/findingUtils.js';
 import type { VerdictStore } from '../store/store.js';
 import type { Policy } from '../config/config.js';
 import { computeGateConfigHash } from '../orchestrator/orchestrator.js';
@@ -28,8 +30,14 @@ export function parseDiff(diff: string): Array<{ path: string; addedContent: str
   return [...out.entries()].map(([path, lines]) => ({ path, addedContent: lines.join('\n') }));
 }
 
+/**
+ * R11 (faz 3 T5): risk-tiered CI derinliği — ÇİFT pipeline. RiskTriageStage ÖNCE tek başına koşar
+ * (risk skorunu hesaplar); skor < policy.ciEnsembleRiskThreshold → gatePipeline (ensemble'sız —
+ * low-risk CI koşumu LLM harcamaz), değilse → fullPipeline (gates + llm-ensemble). Çıkış sözleşmesi
+ * ve event zinciri (TaskPicked→ArtifactProduced→StageVerdicts→RiskScored→FindingEmitted) aynen korunur.
+ */
 export async function runReviewDiff(args: {
-  diffText: string; taskSpecId: string; pipeline: ReviewPipeline; store: VerdictStore;
+  diffText: string; taskSpecId: string; gatePipeline: ReviewPipeline; fullPipeline: ReviewPipeline; store: VerdictStore;
   policy: Policy; repoPath: string;
 }): Promise<{ exitCode: 0 | 1 | 2; gateFailed: string | null; findings: Finding[] }> {
   const files = parseDiff(args.diffText).map((f) => ({ path: f.path, content: f.addedContent }));
@@ -58,13 +66,31 @@ export async function runReviewDiff(args: {
   // ReviewContext tipi: RiskTriageStage riskScore/riskSignals'ı BU nesneye yazar — RiskScored
   // event'i gerçek skorla yazılır (brief'in tip'siz literal'i riskSignals alanını göremiyordu).
   const ctx: ReviewContext = { taskSpec, artifact, repoPath: args.repoPath, riskScore: 0 };
-  const result = await args.pipeline.run(ctx);
+  // R11 (faz 3 T5): 1. Risk triajı ÖNCE tek başına koşar — risk skorunu hesaplar.
+  const triage = new RiskTriageStage(args.policy);
+  const triageResult = await triage.evaluate(ctx);
+  // 2. risk < ciEnsembleRiskThreshold → gatePipeline; değilse fullPipeline.
+  const chosen = ctx.riskScore < args.policy.ciEnsembleRiskThreshold ? args.gatePipeline : args.fullPipeline;
+  const result = await chosen.run(ctx);
+  // Bağımsız triaj koşumunun KENDİ StageVerdict'i (koşum sırasına göre ilk — risk-triage her koşumda
+  // 'pass' döner; skor hesaplama gate'i değil, bulguları advisory niteliğindedir).
+  await args.store.append('StageVerdict', runId, args.taskSpecId, 'risk-triage', { stage: 'risk-triage', status: triageResult.status, durationMs: triageResult.durationMs, parentArtifactEventId: art.event_id });
   // T-final D3: StageVerdict payload'u parentArtifactEventId ZORUNLU — spread ile sağlanır.
   for (const v of result.verdicts) await args.store.append('StageVerdict', runId, args.taskSpecId, 'pipeline', { ...v, parentArtifactEventId: art.event_id });
   await args.store.append('RiskScored', runId, args.taskSpecId, 'risk-triage', { score: ctx.riskScore, signals: ctx.riskSignals ?? {}, policyVersion: String(args.policy.version), parentArtifactEventId: art.event_id });
-  for (const f of result.findings) await args.store.append('FindingEmitted', runId, args.taskSpecId, f.stage, { finding: f, parentArtifactEventId: art.event_id });
+  // R11 hüküm: triaj bulguları seçilen pipeline'ın DIŞINDA koştuğu için buradan kanıta akar (test-diff
+  // bulguları yok olmasın). fullPipeline'da RiskTriageStage pipeline içinde de koşar → aynı test-diff
+  // bulgusu iki kaynaktan gelir; §5.2.4 anahtar kuralı (file+line+category, en şiddetli birebir korunur)
+  // kopyayı düşürür — FindingEmitted tek, stage 'risk-triage'.
+  const byKey = new Map<string, Finding>();
+  for (const f of [...triageResult.findings, ...result.findings]) {
+    const cur = byKey.get(findingKey(f));
+    if (!cur || severityRank(f) < severityRank(cur)) byKey.set(findingKey(f), f);
+  }
+  const findings = [...byKey.values()].sort((a, b) => severityRank(a) - severityRank(b));
+  for (const f of findings) await args.store.append('FindingEmitted', runId, args.taskSpecId, f.stage, { finding: f, parentArtifactEventId: art.event_id });
   const exitCode: 0 | 1 | 2 = result.gateFailed !== null ? 1
-    : result.findings.some((f) => f.severity === 'critical') ? 1
-    : result.findings.length > 0 ? 2 : 0;
-  return { exitCode, gateFailed: result.gateFailed, findings: result.findings };
+    : findings.some((f) => f.severity === 'critical') ? 1
+    : findings.length > 0 ? 2 : 0;
+  return { exitCode, gateFailed: result.gateFailed, findings };
 }
