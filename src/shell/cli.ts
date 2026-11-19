@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { loadConfig } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
@@ -54,7 +54,8 @@ export function buildCli(workDir = process.cwd()): Command {
     };
     process.on('SIGINT', onSigint);
     try {
-      const summary = await orchestrator.run(join(repoDir(), tasksFile));
+      // I7 (final review): resolve — absolute tasksFile yolu bozulmaz (join ile aykırı davranış vardı)
+      const summary = await orchestrator.run(resolve(repoDir(), tasksFile));
       mem.render(); // aktif dersler dosyaya (commit edilir — Generator okur)
       console.log(JSON.stringify(summary, null, 2));
     } finally {
