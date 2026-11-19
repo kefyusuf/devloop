@@ -176,11 +176,12 @@ export class Orchestrator {
       try {
         // C1: generator gerçek repo bağlamını görür — orchestrator düzeyinde doldurulur
         // (backend kendi kendine doldurmaz; orchestrator sahibi). Boş repoTree/repoFiles üretim hatasıydı.
-        // I1: bütçe canary çağrısı YOK — backend'in gateway kullanımı CLI'nın kurduğu tek
-        // BudgetedGateway üzerinden accrete olur; orchestrator yalnız gözlemler.
+        // I1: bütçe canary çağrısı YOK. R1: gateway GenerationContext ile taşınır — backend'in
+        // gateway kullanımı deps.gateway (CLI'nın kurduğu tek BudgetedGateway) üzerinden
+        // accrete olur; orchestrator yalnız gözlemler.
         const repoCtx = readRepoContext(wt, task.filesScope);
         const base = await this.deps.backend.generate(task, {
-          repoPath: wt, repoTree: repoCtx.repoTree, repoFiles: repoCtx.repoFiles, lessons: '', feedback,
+          ...repoCtx, lessons: '', feedback, gateway: this.deps.gateway,
         });
         artifact = base;
       } catch (e) {

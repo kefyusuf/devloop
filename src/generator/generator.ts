@@ -10,6 +10,9 @@ export interface LessonsProvider { contextFor(task: TaskSpec): string }
 export interface GenerationContext {
   repoPath: string; repoTree: string; repoFiles: Array<{ path: string; content: string }>;
   lessons: string; feedback: Finding[];
+  // R1 (bütçe doğruluğu): harcayan backend, gateway'i bağlamdan alır — orchestrator paylaşılan
+  // (Budgeted)Gateway örneğini buradan iletir; yoksa ctor gateway'i, o da yoksa throw.
+  gateway?: LlmGateway;
 }
 export interface GeneratorBackend {
   readonly id: string;
@@ -58,6 +61,9 @@ export class LlmGeneratorBackend implements GeneratorBackend {
   constructor(private readonly gateway: LlmGateway, private readonly memory?: LessonsProvider) {}
 
   async generate(task: TaskSpec, ctx: GenerationContext): Promise<Artifact> {
+    // R1 (bütçe doğruluğu): ctx.gateway ?? ctor gateway — ikisi de yoksa generate edilemez.
+    const gw = ctx.gateway ?? this.gateway;
+    if (!gw) throw new Error('Generator için gateway yok (ctx.gateway veya ctor)');
     const lessons = ctx.lessons || this.memory?.contextFor(task) || 'Aktif ders yok.';
     const feedbackBlock = ctx.feedback.length === 0 ? '' :
       `ÖNCEKİ TUR BULGULARI (bunları çöz):\n${ctx.feedback.map((f) => `- [${f.severity}] ${f.category} @ ${f.evidence.file}:${f.evidence.line ?? '-'}: ${f.suggestion ?? ''}`).join('\n')}`;
@@ -74,7 +80,7 @@ export class LlmGeneratorBackend implements GeneratorBackend {
       feedbackBlock,
       'YALNIZCA yukarıdaki gerçek dosya içerikleriyle tutarlı değişiklik üret; mevcut sınıf/fonksiyon imzalarını koru; testleri kırık davranışa uydurma.',
     ].filter(Boolean).join('\n\n');
-    const { data } = await this.gateway.complete({
+    const { data } = await gw.complete({
       system: 'Sen bir yazılım geliştirme agent\'ısın. Küçük, odaklı değişiklikler yap.',
       user, schema: GenOutput, runId: task.id,
     });

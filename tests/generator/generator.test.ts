@@ -44,16 +44,24 @@ describe('LlmGeneratorBackend', () => {
       return { data: { intent: 'i', rejectedAlternatives: [], testEvidence: 'e', files: [{ path: 'src/math.ts', content: 'export const sum=(a:number,b:number)=>a+b;' }] }, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
     }) } as unknown as LlmGateway;
     const feedback: Finding[] = [{ id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, evidence: { file: 'a.ts' }, suggestion: 'unused var' }];
-    const backend = new LlmGeneratorBackend(gw, { contextFor: () => 'AKTİF DERS: fiil isimleri.' });
+    // R1 (bütçe doğruluğu): backend ctor gateway'siz kurulur — gateway ctx.gateway'ten gelir.
+    const backend = new LlmGeneratorBackend(undefined as never);
     const dir = mkdtempSync(join(tmpdir(), 'gb-'));
     mkdirSync(join(dir, 'src'), { recursive: true });
     writeFileSync(join(dir, 'src', 'svc.ts'), 'export class Svc {}');
     const base = readRepoContext(dir, ['src/']);
-    await backend.generate(task, { ...base, lessons: 'AKTİF DERS: fiil isimleri.', feedback });
+    await backend.generate(task, { ...base, lessons: 'AKTİF DERS: fiil isimleri.', feedback, gateway: gw });
     expect(captured).toContain('AKTİF DERS');
     expect(captured).toContain('ÖNCEKİ TUR BULGULARI');
     expect(captured).toContain('unused var');
     expect(captured).toContain('export class Svc'); // repo içeriği — yoksa Generator gerçek kodu değiştiremez
+  });
+
+  it('ctx.gateway yoksa ctor gateway, o da yoksa throw', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbctx-'));
+    const base = readRepoContext(dir, ['src/']);
+    const backend = new LlmGeneratorBackend(undefined as never); // ctor gateway yok
+    await expect(backend.generate(task, { ...base, lessons: '', feedback: [] })).rejects.toThrow('gateway yok');
   });
 });
 

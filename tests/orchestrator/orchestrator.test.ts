@@ -29,10 +29,13 @@ const ART: Artifact = { diff: '', intent: 'i', rejectedAlternatives: [], testEvi
 const fakeBackend = (art: Artifact = ART) => ({ id: 'fake', generate: vi.fn(async () => art) });
 // hüküm (final review I1): canary kaldırıldı — gerçek harcayan (LlmGeneratorBackend) generate
 // içinde gateway'i çağırır; bütçe testi fake backend'i de AYNI davranışa bindirir.
-const gatewayCallingBackend = (gw: LlmGateway, art: Artifact = ART) => ({
+// R1 (bütçe doğruluğu): gateway ARTIK ctx.gateway'den çağrılır — orchestrator deps.gateway'i
+// bağlama koymalı; spend, paylaşılan (Budgeted)Gateway örneği üzerinden GERÇEK birikir.
+const gatewayCallingBackend = (art: Artifact = ART) => ({
   id: 'fake',
-  generate: vi.fn(async () => {
-    await gw.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' });
+  generate: vi.fn(async (_t: unknown, ctx: { gateway?: LlmGateway }) => {
+    expect(ctx.gateway).toBeDefined(); // orchestrator gateway'i GenerationContext ile taşımali (R1)
+    await (ctx.gateway as LlmGateway).complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'x' });
     return art;
   }),
 });
@@ -97,11 +100,14 @@ describe('Orchestrator', () => {
     const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
     // hüküm (final review I1): bütçe tek kapı — deps.gateway GERÇEK BudgetedGateway; backend
     // generate başına gateway'i bir kez çağırır (gerçek LlmGeneratorBackend'i yansıtır).
+    // R1: backend gateway'i ctx.gateway'den alır — paylaşılan BudgetedGateway iletimi kanıtlanır.
     const gw = new BudgetedGateway(costGateway(1.5), policy.budgetUsd, () => {});
-    const summary = await new Orchestrator(deps(repo, store, { gateway: gw, backend: gatewayCallingBackend(gw) })).run(tasksFile(repo, [
+    const backend = gatewayCallingBackend();
+    const summary = await new Orchestrator(deps(repo, store, { gateway: gw, backend })).run(tasksFile(repo, [
       { id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
       { id: 't2', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
     ]));
+    expect(backend.generate.mock.calls[0][1].gateway).toBe(gw); // ctx.gateway = paylaşılan BudgetedGateway
     expect(summary.aborted).toBe('budget');
     expect(summary.prs).toHaveLength(1);
     expect(store.query({ type: 'RunAborted' })[0].payload.reason).toBe('budget');
@@ -118,9 +124,9 @@ describe('Orchestrator', () => {
     const repo = initRepo();
     const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
     // hüküm (final review I1): gateway hatası backend'in generate'ının içinden gelir (canary yok) —
-    // fake backend gerçek harcayan gibi gateway'i çağırır.
+    // R1: fake backend gateway'i ctx.gateway'den çağırır (deps.gateway → ctx iletimi).
     const deadGateway: LlmGateway = { complete: vi.fn(async () => { throw new GatewayError('ağ yok'); }) };
-    const backend = gatewayCallingBackend(deadGateway);
+    const backend = gatewayCallingBackend();
     const summary = await new Orchestrator(deps(repo, store, { gateway: deadGateway, backend })).run(tasksFile(repo, [
       { id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
       { id: 't2', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
