@@ -19,7 +19,10 @@ export async function applyArtifact(repoPath: string, artifact: Artifact): Promi
     if (relFromRoot.startsWith('..') || isAbsolute(relFromRoot)) {
       throw new Error(`Yol kaçışı reddedildi: ${file.path}`);
     }
-    if (DENIED_EXACT.has(rel) || rel.startsWith('.devloop/')) {
+    // R4b: denylist eşleşmesi case-insensitive — 'Policy.YAML' gibi uzantı varyantları da düşer.
+    // Yalnızca bu karşılaştırma lowercase; yol canonicalization/'..'/symlink denetimleri orijinal rel ile.
+    const relLower = rel.toLowerCase();
+    if (DENIED_EXACT.has(relLower) || relLower.startsWith('.devloop/')) {
       throw new Error(`Yasaklı yol reddedildi: ${file.path} (politika/kanıt yüzeyleri agent'a kapalıdır)`);
     }
     // A5: yazma öncesi — var olan her ata segmenti kök içinde kalmalı (symlink kaçışı yok)

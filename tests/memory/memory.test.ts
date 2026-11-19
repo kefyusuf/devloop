@@ -35,3 +35,10 @@ describe('LessonMemory (targetComponent ayrımı)', () => {
     expect(existsSync(file)).toBe(true);
   });
 });
+
+it('Unicode tokenizasyon: diakritikli kelime eşleşir', async () => {
+  const { store, file } = setup();
+  await store.append('LessonLearned', 'r', 't', 'l', { lessonId: 'u1', rule: 'kullanırken timeout unutma', scope: '*', confidence: 0.9, status: 'active', targetComponent: 'generator', parentDecisionEventIds: [] });
+  const mem = new LessonMemory(store, file);
+  expect(mem.contextFor({ id: 't', description: 'kullanırken dikkat', acceptanceCriteria: ['a'], filesScope: [] })).toContain('timeout');
+});

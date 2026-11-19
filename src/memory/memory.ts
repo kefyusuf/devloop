@@ -23,7 +23,9 @@ export class LessonMemory implements LessonsProvider {
   }
 
   contextFor(task: TaskSpec): string {
-    const words = `${task.description} ${task.acceptanceCriteria.join(' ')}`.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+    // R4c: \W+ ASCII'de kalmıştı — 'kullanırken' gibi diakritikli kelimeler parçalanıyordu;
+    // Unicode harf sınıfı ([^\p{L}]+, u bayraklı) tüm dillerin harflerini tek token'da tutar.
+    const words = `${task.description} ${task.acceptanceCriteria.join(' ')}`.toLowerCase().split(/[^\p{L}]+/u).filter((w) => w.length > 3);
     const lessons = this.active('generator');
     const relevant = lessons.filter((l) => words.some((w) => `${l.rule} ${l.scope}`.toLowerCase().includes(w)));
     const chosen = relevant.length > 0 ? relevant : lessons.slice(0, 5);

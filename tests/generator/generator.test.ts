@@ -119,3 +119,8 @@ describe('applyArtifact güvenliği', () => {
     expect(existsSync(join(outsideDir, 'not-yet.txt'))).toBe(false);
   });
 });
+
+it('denylist case-insensitive: Policy.YAML da reddedilir', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apci-'));
+  await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'Policy.YAML', content: 'x' }] })).rejects.toThrow('Yasaklı');
+});

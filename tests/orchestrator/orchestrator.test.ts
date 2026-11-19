@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { Orchestrator, BudgetedGateway, type OrchestratorDeps } from '../../src/orchestrator/orchestrator.js';
+import { Orchestrator, BudgetedGateway, computeGateConfigHash, type OrchestratorDeps } from '../../src/orchestrator/orchestrator.js';
 import { VerdictStore, validateChain } from '../../src/store/store.js';
 import { ReviewPipeline } from '../../src/pipeline/pipeline.js';
 import { loadConfig } from '../../src/config/config.js';
@@ -169,4 +169,12 @@ describe('Orchestrator', () => {
     expect(summary.prs[0].taskId).toBe('task-1');
     expect(backend.generate).toHaveBeenCalledTimes(1); // task-2 blocked, tekrar denenmedi
   });
+});
+
+it('gateConfigHash: yoksa absent marker, içerik değişince değişir', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gh-'));
+  const h1 = computeGateConfigHash(dir);
+  expect(h1).toContain('absent:tsconfig.json');
+  writeFileSync(join(dir, 'tsconfig.json'), '{"compilerOptions":{}}');
+  expect(computeGateConfigHash(dir)).not.toBe(h1);
 });

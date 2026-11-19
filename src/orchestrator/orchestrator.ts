@@ -52,6 +52,27 @@ export class BudgetedGateway implements LlmGateway { // A6: bütçe gerçek usag
   }
 }
 
+/**
+ * R4a: gate config parmak izi — tsconfig.json/eslint.config.js/.eslintrc.json içeriklerinin
+ * sha256'sı (16 hex); dosya yoksa hash materyaline 'absent:<name>' marker girer. Plan snippet'i
+ * hex-only dönüş öngörüyordu; brief'in kendi testi toContain('absent:...') beklediği için çelişki
+ * vardı — Task 4 hükmü (test kazanır) uygulanır: absent marker'lar dönüşte digest'e annotation
+ * olarak eklenir (dosyaların hepsi varsa düz hex döner).
+ */
+const GATE_CONFIG_FILES = ['tsconfig.json', 'eslint.config.js', '.eslintrc.json'] as const;
+
+export function computeGateConfigHash(repoPath: string): string {
+  const hash = createHash('sha256');
+  const absent: string[] = [];
+  for (const name of GATE_CONFIG_FILES) {
+    const p = join(repoPath, name);
+    if (existsSync(p)) hash.update(name + ':' + readFileSync(p, 'utf8'));
+    else { hash.update(`${name}:absent:${name}`); absent.push(`absent:${name}`); }
+  }
+  const digest = hash.digest('hex').slice(0, 16);
+  return absent.length === 0 ? digest : `${digest}|${absent.join('|')}`;
+}
+
 export class Orchestrator {
   // Hüküm (fix round 1): bütçe per-run; resume yeni bütçe alır — A6 'gerçek usage' değişmezi
   // koşum bazında işler (açık insan yeniden-koşumu yeni bütçeye rıza gösterir).
@@ -85,7 +106,9 @@ export class Orchestrator {
         return summary;
       }
     } else {
-      await store.append('RunStarted', runId, '-', 'orchestrator', { configSnapshot: { model: policy.llm.model, budgetUsd: policy.budgetUsd, policyHash } });
+      // R4a: gate config parmak izi RunStarted kanıtına yazılır (policyHash yanına).
+      const gateConfigHash = computeGateConfigHash(repoPath);
+      await store.append('RunStarted', runId, '-', 'orchestrator', { configSnapshot: { model: policy.llm.model, budgetUsd: policy.budgetUsd, policyHash, gateConfigHash } });
     }
 
     // A2 (C2): worktree artık repo içinde (<repo>/.devloop/worktrees/) — .devloop/ hedef reponun
