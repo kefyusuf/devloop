@@ -52,6 +52,9 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     expect(out1[0].title).toContain('off-by-one');
     expect(out1[0].sourceEvalId).toBe('base-eval');
     expect(out1[0].evoId).toBe(out2[0].evoId); // deterministik: iki çağrı aynı ID
+    // provenance (faz 2 review Minor #2 kalıntısı): karar event ID'leri content'te taşınır
+    const decisionIds = ctx.store.query({ type: 'HumanDecision' }).map((e) => e.event_id).sort();
+    expect(out1[0].content.sourceDecisionIds).toEqual(decisionIds);
   });
 
   it("FindingEmitted 'test-diff' ≥2 farklı koşum → playbook-generator adayı", async () => {
@@ -64,6 +67,33 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     const out = generateEvolutionCandidates(ctx, baseSummary());
     expect(out).toHaveLength(1);
     expect(out[0].kind).toBe('playbook-generator');
+  });
+
+  // Fix round 1 (sinyal kirliliği): shadow/eval koşum bulguları sinyal SAYILMAZ — aksi halde
+  // feature'ın KENDİ shadow koşumları (risk-triage test-diff bulguları runEval ile FindingEmitted
+  // olarak yazılır) 2. evolve --shadow'dan sonra kendi kendine playbook-generator adayı üretir.
+  it('shadow koşum test-diff bulguları aday sayımına girmez; yalnız üretim koşumları sayılır', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo3b-'));
+    const ctx = makeCtx(dir);
+    const emitTestDiff = async (run: string, taskId: string) => {
+      const art = await ctx.store.append('ArtifactProduced', run, taskId, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
+      await ctx.store.append('FindingEmitted', run, taskId, 'risk-triage', { finding: { id: `f-${taskId}`, stage: 'risk-triage', category: 'test-diff', severity: 'optional', confidence: 1, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+    };
+    // 1 üretim koşumu + 1 shadow koşumu (EvalRun configSnapshot'ta 'candidate') — her biri 1 test-diff
+    await emitTestDiff('r-prod-1', 't1');
+    await ctx.store.append('EvalRun', 'eval-shadow-1', '-', 'eval', { evalId: 's1', goldenCount: 1, passed: 1, failed: 0, score: 100, perTask: [], configSnapshot: { candidate: { label: 'x' } } });
+    await emitTestDiff('eval-shadow-1', 'ts1');
+    // shadow hariç yalnız 1 üretim koşumu var → eşik (≥2) altı, aday YOK
+    expect(generateEvolutionCandidates(ctx, baseSummary())).toHaveLength(0);
+    // 2. üretim koşumu → aday üretilir
+    await emitTestDiff('r-prod-2', 't2');
+    const out = generateEvolutionCandidates(ctx, baseSummary());
+    expect(out).toHaveLength(1);
+    expect(out[0].kind).toBe('playbook-generator');
+    // Ek shadow koşumu (yenisi + yeni bulgu) evoId'yi DEĞİŞTİRMEZ — sayım yalnız üretim koşumları
+    await ctx.store.append('EvalRun', 'eval-shadow-2', '-', 'eval', { evalId: 's2', goldenCount: 1, passed: 0, failed: 1, score: 0, perTask: [], configSnapshot: { candidate: { label: 'x' } } });
+    await emitTestDiff('eval-shadow-2', 'ts2');
+    expect(generateEvolutionCandidates(ctx, baseSummary())[0].evoId).toBe(out[0].evoId);
   });
 });
 

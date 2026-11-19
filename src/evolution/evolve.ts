@@ -27,9 +27,19 @@ export interface EvolveContext {
 
 export function generateEvolutionCandidates(ctx: EvolveContext, baseline: EvalSummary): EvolutionCandidate[] {
   if (ctx.goldenCount < ctx.l3MinGoldenTasks) return []; // R10 eşik
-  const decisions = ctx.store.query({ type: 'HumanDecision' });
+  // Fix round 1 (sinyal kirliliği): candidate-labeled (shadow/eval) koşumların kanıtları sinyal
+  // SAYILMAZ — lastEvalRun'ın production filtresiyle aynı kural ('candidate' configSnapshot'ta
+  // var). Aksi halde feature'ın KENDİ shadow koşumları (risk-triage test-diff bulguları runEval
+  // ile FindingEmitted olarak yazılır) 2. evolve --shadow'dan sonra kendi kendine playbook-
+  // generator adayı üretir (self-noise). Karar bucket'larına da aynı filtre uygulanır — bugün
+  // shadow koşumda HumanDecision oluşmaz ama invariant açık ve geleceğe hazır olsun.
+  const shadowRunIds = new Set(ctx.store.query({ type: 'EvalRun' })
+    .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun' && 'candidate' in e.payload.configSnapshot)
+    .map((e) => e.run_id));
+  const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !shadowRunIds.has(e.run_id));
   const findings = ctx.store.query({ type: 'FindingEmitted' })
-    .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted'); // union daraltma (strict tsc — learn.ts ile aynı desen)
+    .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted') // union daraltma (strict tsc — learn.ts ile aynı desen)
+    .filter((e) => !shadowRunIds.has(e.run_id));
   const byFinding = new Map<string, string>(findings.map((e): [string, string] => [e.event_id, e.payload.finding.category]));
   const buckets = new Map<string, { rejects: string[]; runs: Set<string>; decisionIds: string[] }>();
   for (const d of decisions) {
@@ -50,7 +60,7 @@ export function generateEvolutionCandidates(ctx: EvolveContext, baseline: EvalSu
       evoId: id(`playbook-reviewer:${category}:${b.decisionIds.sort().join('|')}`),
       kind: 'playbook-reviewer',
       title: `"${category}" false-positive tekrarı — reviewer playbook yumuşatma önerisi`,
-      content: { category, note: 'reviewer rubriğinde bu kategori için kanıt eşiği yükseltilmeli (shadow doğrulandı)' },
+      content: { category, note: 'reviewer rubriğinde bu kategori için kanıt eşiği yükseltilmeli (shadow doğrulandı)', sourceDecisionIds: [...b.decisionIds].sort() },
       sourceEvalId: baseline.evalId,
     });
   }
