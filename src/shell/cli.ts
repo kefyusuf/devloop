@@ -306,6 +306,15 @@ export function buildCli(workDir = process.cwd()): Command {
       const baseEv = lastEvalRun(s, 'production');
       if (!baseEv) throw new Error('Önce production eval koşun');
       const baseline = evalRunToSummary(baseEv.payload, policy.l3MinGoldenTasks);
+      // I4 (final fix wave, spec R9/R10 "eşik altı bildirir"): golden set l3MinGoldenTasks
+      // eşiğinin altındaysa L3 AKTİF DEĞİL — shadow eval HİÇ kurulmaz/koşulmaz (ücretli LLM
+      // ensemble koşumu harcanmaz) ve yalnız açık bildirim döner. Eşik kontrolü baseline ön
+      // koşulundan SONRA: production eval yokluğu ayrı bir kullanıcı hatasıdır ('Önce production
+      // eval koşun' — mevcut sözleşme korunur); eşik altı ise eval harcamanın kendisini engeller.
+      if (ctx.goldenCount < policy.l3MinGoldenTasks) {
+        console.log(JSON.stringify({ l3Active: false, message: `L3 eşik altı (l3MinGoldenTasks=${policy.l3MinGoldenTasks}, golden=${ctx.goldenCount}) — eval koşulmadı` }, null, 2));
+        return;
+      }
       const candidates = generateEvolutionCandidates(ctx, baseline);
       writeShadowCandidates(ctx, candidates); // ÖNCE yazılır — provider shadow eval'e aday notlarını taşır
       // hüküm (I2 final fix wave): shadow eval reviewerLessons KAYNAĞI BİLINÇLİ OLARAK

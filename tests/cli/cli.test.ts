@@ -101,6 +101,40 @@ describe('CLI', () => {
       .rejects.toThrow('Önce production eval koşun');
   });
 
+  // I4 (final fix wave, spec R9/R10 "eşik altı bildirir"): golden set l3MinGoldenTasks eşiğinin
+  // altındayken evolve --shadow shadow eval'i HİÇ koşmaz — açık 'eşik altı' bildirimi döner ve
+  // store'da candidate etiketli YENİ EvalRun YAZILMAZ (ücretli LLM ensemble koşumu harcanmaz).
+  it('evolve --shadow: goldenCount < l3MinGoldenTasks → eşik altı bildirimi + shadow EvalRun YAZILMAZ', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-evo5-'));
+    // policy.yaml yok → l3MinGoldenTasks=50; tek golden görev → golden=1 < 50 (eşik altı)
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify({
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    }));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    // baseline ön koşulu karşılanır (production EvalRun seed) — eşik-altı yolu buradan ayrışır
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 1, passed: 1, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    try {
+      await buildCli(dir).parseAsync(['node', 'devloop', 'evolve', '--shadow']);
+    } finally { console.log = origLog; }
+    const parsed = JSON.parse(out.join('\n'));
+    expect(parsed.l3Active).toBe(false);
+    expect(parsed.message).toContain('eşik altı');
+    expect(parsed.message).toContain('l3MinGoldenTasks=50');
+    expect(parsed.message).toContain('golden=1');
+    expect(parsed.message).toContain('eval koşulmadı');
+    // wasted eval yok: candidate etiketli EvalRun YAZILMADI — store'da yalnız seed edilen üretim koşumu var
+    const candidateRuns = store.query({ type: 'EvalRun' })
+      .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun' && 'candidate' in e.payload.configSnapshot);
+    expect(candidateRuns).toHaveLength(0);
+    expect(store.query({ type: 'EvalRun' })).toHaveLength(1);
+  });
+
   it('evolve --shadow: çıktı JSON parse edilebilir; shadowEval candidate=evolve-shadow; baseline production evalId', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli-evo1-'));
     // policy.yaml: l3MinGoldenTasks=1 (test küçültmesi) — loadConfig yalnız repoDir()'den okur
