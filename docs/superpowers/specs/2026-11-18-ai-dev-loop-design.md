@@ -1,7 +1,7 @@
 # AI Geliştirme Döngüsü Sistemi — Tasarım Dokümanı (Spec)
 
 - **Tarih:** 2026-11-18
-- **Durum:** v1 tamamlandı ve main'e merge edildi (51398c2); Revizyon 2 (faz 2) tasarım onay aşamasında
+- **Durum:** v1 + Faz 2 tamamlandı ve main'e merge edildi (a22beca, 149/149); Revizyon 3 (faz 3) tasarım onay aşamasında
 - **Çalışma adı:** `devloop` *(placeholder — karar kutusu 9.3)*
 - **Ölçek:** Mimari (architectural) — yeni sistem, yeşil alan
 
@@ -349,3 +349,69 @@ Container sandbox; eval harness + golden dataset (L3 kapısı); risk-tiered teti
 ### Policy şeması ekleri (R2–R5)
 
 `ensembleRiskThreshold (40)`, `mutationScoreThreshold (60)`, `mutationTimeoutMinutes (15)`, `llm.backoffMs (500)`, `l2MinDecisions (100)` — tümü `.default()` ile geriye dönük uyumlu; değişiklikleri insan-onaylı review'e tabi (§5.2.2 aynen).
+
+---
+
+## Revizyon 3 — Faz 3: Eval, Risk-Tiered, Çoklu Sağlayıcı, Sandbox ve L3 Evrimi (2026-11-19)
+
+Faz 2 tamamlandı (merge a22beca, 149/149). Faz 3 kapsamı: **TAM (R9–R15)** — R8'de ertelenen kalemler + L3 evrimi. Hükümler: kapsam B varsayılan onay; Yaklaşım 1 'kontrat ekleme' devam; **koşullu aktivasyon ilkesi** — ortam bağımlı bileşenler (OpenAI, Docker) fail-closed koşul guard'larıyla inşa edilir, ortam hazır olduğunda tek config ile aktifleşir; hiçbir bileşen ortam yokluğunda sessizce başka davranışa düşmez.
+
+### R9 — Eval Harness + Golden Dataset (L3 kapısı)
+
+- **Golden görev formatı:** hedef repo'da `.devloop/golden/*.task.json` (insan-küratörlü, commit edilir): `{ goldenId, taskSpec: TaskSpec, fixtureDiff: string, expected: { gatesPass: boolean, requiredFindings: [{category, severity?}], forbiddenCategories: [string] } }`.
+- **Eval runner:** `devloop eval [--candidate <policyPath>] [--full]` — golden setin tamamı koşar; **deterministik mod** (varsayılan): gates + triaj, LLM çağrısı YAPMAZ (stabil skor); `--full`: ensemble dahil. Görev başına pipeline sonucu vs `expected` karşılaştırması.
+- **Skor:** `(gatesPass doğru + required bulgular yakalanmış − forbidden ihlali) / görev × 100`.
+- **`EvalRun` event (faz 1 stub'ı dolu hale gelir):** `{ evalId, goldenCount, passed, failed, score, perTask[], configSnapshot (candidate|production), comparedTo? }`.
+- **Shadow karşılaştırma:** `--candidate` aday config koşar → `comparedTo` son production EvalRun; çıktı gerileme raporu. **Üretim config'ine sıfır yazım** — devreye alma insan kararı.
+- **Donmuş yargıç (§6):** karşılaştırma yalnız golden `expected` (insan-küratörlü, görev başına sabit) + gate çıktıları üzerinden; öğrenen bileşenlerin yargısı jüri olmaz; jüri config'i ayrı versiyonlanır.
+- **L3 kapısı:** policy `l3MinGoldenTasks` (50) — altında eval koşar ama L3 evrim komutları "eşik altı" bildirir (§6 faz-3 ön koşulu).
+
+### R10 — L3 Prompt/Policy Evrimi (shadow + insan kapısı)
+
+- **Playbook formatı:** `<repo>/.devloop/playbooks/generator.md` + `reviewer.md` — versiyonlu, insan-onaylı kural metinleri; Generator ve reviewer prompt'larına bağlam olarak girer.
+- **Evolüsyon motoru:** `devloop evolve --shadow` — verdict store pattern'lerinden (tekrarlayan false-positive kategoriler, sık test-diff blokları) **deterministik aday playbook/policy mutasyonları** üretir (v3'te LLM'siz; LLM üretimli mutasyonlar faz 4 — eval+insan kapısı olgunlaşınca). Aday set `candidate/` dizininde.
+- **Shadow koşum:** aday playbook set + aday policy ile eval `--candidate` → `EvalRun(candidate, comparedTo)` → karşılaştırma raporu (skor farkı + per-task gerileme listesi). Üretim config'ine sıfır yazım.
+- **Devreye alma kapısı:** insan raporu inceler → `devloop evolve apply <evoId>` → aday playbook/policy normal policy-review yoluyla (insan-onaylı diff) yazılır. **Golden sette herhangi bir görev gerilerse apply reddedilir.**
+- **Eşik:** `l3MinGoldenTasks` altında evolve "eşik altı" bildirir.
+
+### R11 — Risk-tiered tetikleme
+
+- **Mutation kapsam ölçekleme:** risk < 30 → `--mutate` ≤5 dosya; risk ≥ 30 → ≤10 (policy `mutationScopeLow`/`mutationScopeHigh`). Triaj seçimi: artifact dosyaları içerik-uzunluğu desc sıralı (deterministik proxy, dokümante).
+- **CI derinliği:** `review-diff` risk < 20 → gates-only (ensemble atlanır); risk ≥ 20 → tam ensemble (policy `ciEnsembleRiskThreshold`, CI'ya özgü — v2'nin `ensembleRiskThreshold`'ından ayrı).
+- **Golden eval maliyet katmanı:** eval varsayılan gates-only; `--full` ensemble dahil.
+
+### R12 — İkinci sağlayıcı (OpenAI adapter)
+
+- `src/gateway/openai.ts`: `OpenAIGateway implements LlmGateway` — chat completions, model chain (openai.model → openai.fallbackModel), şema doğrulama + backoff aynen; ctor `(policy, fetchImpl?, sleepImpl?)`.
+- Policy genişleme: `llm.provider: 'anthropic' | 'openai'`; `llm.openai { model, fallbackModel, maxTokens, costPer1kInput, costPer1kOutput }`; anahtar yalnız `OPENAI_API_KEY` env — yoksa `GatewayError` fail-closed (A5 aynen).
+- **Gateway factory:** `createGateway(policy)` sağlayıcıya göre Anthropic/OpenAI döndürür; `BudgetedGateway` değişmez (tek interface); ensemble alt reviewer'ın `model` override'ı openai modeline de gidebilir (B kompozisyonuna config satırıyla geçiş).
+- **Çapraz-sağlayıcı fallback yok (v3):** her sağlayıcı kendi chain'i içinde; `crossProviderFallback` faz 4 notu.
+- **Koşullu aktivasyon:** `OPENAI_API_KEY` yoksa openai provider seçilemez; testler tamamen mock (gerçek API yok).
+
+### R13 — Container sandbox (Docker)
+
+- Policy: `sandbox { mode: 'host' | 'docker', image: 'node:20-bookworm-slim' }` — default `'host'` (geriye dönük uyum).
+- `docker` modunda **yalnız deterministik gate spawn'ları** konteynerde: `docker run --rm -v <wt>:/workspace -w /workspace --network=none -e <safeEnv> <image> <cmd>` — `--network=none` sırrın dışarı çıkışını da kapatır; `safeEnv` aynen. LLM Gateway, gh/push host'ta kalır (§7.1 "yalnız deterministik stage'ler" aynen).
+- **Aktivasyon:** run başında `docker info` kontrolü; docker modu seçili + Docker yok → run-level abort + açık mesaj (sessiz host-fallback A6'yı bozar — kullanıcı bilinçli seçmiş).
+- **TOCTOU:** symlink kaçışı konteyner sınırında kalır — v1'in bilinen residual'ı kapanır.
+- Test: komut inşası (docker run arg'ları birebir), Docker-yok → abort yolu (mock detection); gerçek docker koşumu `DEVLOOP_DOCKER=1` flag arkasında.
+
+### R14 — Küçük sertleştirmeler
+
+- `Finding.evidence` opsiyonel `mutantId: string` — mutation per-mutant bulgularda doldurulur (R3'ün "dosya+mutant no" makin-okunur hali).
+- `parseDiff` state-machine: header tanıma yalnız hunk başlangıcında — içerik-başlangıçlı `--- /+++` satırları artık içerik sayılır (T8 kalıntısı).
+- Gate-config denylist genişletme: `applyArtifact` denylist'e `tsconfig.json`, `eslint.config.js`, `.eslintrc.json` eklenir (faz 2 final review kalıntısı).
+- Faz 2 SHIP kalıntıları: backoff test sekans pin'i (deep-equal), R4c Unicode test güçlendirme (diakritikli kural kelimesi), ensemble errorMessage çocuk nedeni, L2 eşik-altı explicit mesaj.
+
+### R15 — Test stratejisi ve kabul kriterleri (faz 3)
+
+- Yeni testler: eval runner deterministik koşum (LLM'siz kanıt) + shadow karşılaştırma + L3 eşik davranışı; risk-tier sınırları (20/30); OpenAI mock matrisi (geçerli/bozuk/retry/fallback/maliyet) + factory seçimi; docker komut inşası + Docker-yok abort yolu (mock) + `DEVLOOP_DOCKER=1` gerçek koşum; mutant-no akışı; parseDiff edge'leri; denylist genişletme; faz 2 SHIP kalıntıları.
+- **Kabul kriterleri:** mevcut 149 bozulmaz; eval deterministik modda sıfır LLM çağrısı yapar; shadow mode üretim config'ine yazmaz; `evolve apply` golden gerileme varsa reddeder; docker modu Docker'sız ortamda açık mesajla abort eder; OpenAI provider anahtarsız fail-closed; tüm policy ekleri default'lu geriye dönük uyumlu; README faz 3 bölümü.
+
+### R16 — Bilinçli ertelemeler (faz 4)
+
+Cross-provider fallback; LLM üretimli playbook mutasyonları; golden dataset ≥50 aktivasyon (veri birikimi kullanıcı tarafında); multi-repo eval; sandbox'ın mutation dışı stage'lere genişletmesi.
+
+### Policy şeması ekleri (R9–R14)
+
+`l3MinGoldenTasks (50)`, `ciEnsembleRiskThreshold (20)`, `mutationScopeLow (5)`/`mutationScopeHigh (10)`, `sandbox { mode: 'host', image: 'node:20-bookworm-slim' }`, `llm.provider` enum genişletme (`'openai'`), `llm.openai` blok, `Finding.evidence.mutantId?` — tümü `.default()`/opsiyonel ile geriye dönük uyumlu; değişiklikleri insan-onaylı review'e tabi (§5.2.2 aynen).
