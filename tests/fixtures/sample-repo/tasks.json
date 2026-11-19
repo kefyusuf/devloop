@@ -1,0 +1,1 @@
+[{ "id": "task-1", "description": "src/repeat.ts içine repeat(s, n) fonksiyonu ekle (yeni dosya)", "acceptanceCriteria": ["repeat('ab', 2) === 'abab'", "negatif n için boş string"], "filesScope": ["src/"] }]
