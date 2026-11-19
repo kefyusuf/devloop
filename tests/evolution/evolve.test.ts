@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   generateEvolutionCandidates, writeShadowCandidates, applyEvolution,
-  loadCandidate, candidatePlaybookProvider, type EvolutionCandidate, type EvolveContext,
+  loadCandidate, candidatePlaybookProvider, loadAppliedPlaybooks, type EvolutionCandidate, type EvolveContext,
 } from '../../src/evolution/evolve.js';
 import { DevloopEventSchema } from '../../src/contracts/events.js';
 import { VerdictStore } from '../../src/store/store.js';
@@ -9,6 +9,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { EvalSummary } from '../../src/eval/evalRunner.js';
+import { LlmReviewerStage } from '../../src/pipeline/stages/llmReviewer.js';
+import type { LlmGateway } from '../../src/gateway/gateway.js';
+import type { ReviewContext } from '../../src/contracts/review.js';
+import { z } from 'zod';
 
 const baseSummary = (over: Partial<EvalSummary> = {}): EvalSummary => ({
   evalId: 'base-eval', goldenCount: 60, passed: 60, failed: 0, score: 100,
@@ -183,6 +187,60 @@ describe('candidatePlaybookProvider (shadow eval reviewerLessons kaynağı)', ()
     expect(text).not.toContain('Generator B');
     const empty = candidatePlaybookProvider(makeCtx(mkdtempSync(join(tmpdir(), 'evo-p2-'))));
     expect(empty.reviewerContext()).toBe('Reviewer playbook önerisi yok.');
+  });
+});
+
+// I2 (final fix wave): applied playbook'lar reviewer prompt'una bağlanır — applyEvolution'un
+// yazdığı .devloop/playbooks/<evoId>.json staging dosyaları loadAppliedPlaybooks ile okunur ve
+// CLI kompozisyonu (mem + playbooks, 'yok.' filtreli) üzerinden reviewer system prompt'una girer.
+describe('loadAppliedPlaybooks (applied playbook → reviewer prompt, I2)', () => {
+  const reviewCtx: ReviewContext = {
+    taskSpec: { id: 't', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+    artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] },
+    repoPath: '.', riskScore: 30,
+  };
+
+  it('applyEvolution ile yazılan playbook-reviewer içeriği reviewer system prompt\'una girer; bozuk/generator dosyalar fail-soft atılır', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo-ap-'));
+    const ctx = makeCtx(dir, { playbookDir: join(dir, '.devloop', 'playbooks') }); // loadAppliedPlaybooks repoPath sözleşmesi
+    const applied: EvolutionCandidate = {
+      evoId: 'evo-ap1', kind: 'playbook-reviewer', title: '"off-by-one" false-positive tekrarı',
+      content: { category: 'off-by-one', note: 'reviewer rubriğinde kanıt eşiği yükseltilmeli' }, sourceEvalId: 'base-eval',
+    };
+    writeShadowCandidates(ctx, [applied]);
+    await applyEvolution(ctx, applied, baseSummary({ evalId: 's', failed: 0 }), baseSummary()); // staging: .devloop/playbooks/evo-ap1.json
+    // cli.ts kompozisyonunun birebir aynası: [mem, playbooks] — 'yok.' bildirimleri filtrelenir
+    const mem = { reviewerContext: () => 'Reviewer dersi yok.' }; // boş LessonMemory davranışı
+    const playbooks = loadAppliedPlaybooks(dir);
+    expect(playbooks.reviewerContext()).toContain('"off-by-one" false-positive tekrarı');
+    expect(playbooks.reviewerContext()).toContain('kanıt eşiği yükseltilmeli');
+    const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
+    // capture deseni (llmReviewer.test.ts ile aynı): mock gateway user/system'i yakalar
+    let capturedSystem = '';
+    let capturedUser = '';
+    const gateway: LlmGateway = {
+      complete: vi.fn(async (req: { system: string; user: string; schema: z.Zod<unknown> }) => {
+        capturedSystem = req.system; capturedUser = req.user;
+        return { data: { findings: [] }, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 } };
+      }),
+    } as unknown as LlmGateway;
+    await new LlmReviewerStage(gateway, reviewerLessons).evaluate(reviewCtx);
+    expect(capturedSystem).toContain('GEÇMİŞ İNSAN KARARLARINDAN DERSLER');
+    expect(capturedSystem).toContain('"off-by-one" false-positive tekrarı');
+    expect(capturedSystem).toContain('kanıt eşiği yükseltilmeli');
+    expect(capturedSystem).not.toContain('yok.'); // boş mem + filtre → çıplak bildirim prompt'a girmez
+    expect(capturedUser).toContain('DIFF');
+  });
+
+  it('playbook-reviewer DIŞI staging (generator) ve bozuk json atılır; boş dizin → bildirim mesajı', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo-ap2-'));
+    mkdirSync(join(dir, '.devloop', 'playbooks'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'playbooks', 'gen.json'), JSON.stringify({ evoId: 'g1', kind: 'playbook-generator', title: 'Generator staging' }), 'utf8');
+    writeFileSync(join(dir, '.devloop', 'playbooks', 'broken.json'), '{ bozuk', 'utf8');
+    const text = loadAppliedPlaybooks(dir).reviewerContext();
+    expect(text).toBe('Reviewer playbook önerisi yok.');
+    // playbooks/ dizini hiç yokken de fail-soft (mkdir yok — existsSync koruması)
+    expect(loadAppliedPlaybooks(mkdtempSync(join(tmpdir(), 'evo-ap3-'))).reviewerContext()).toBe('Reviewer playbook önerisi yok.');
   });
 });
 

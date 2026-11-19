@@ -125,3 +125,25 @@ export function candidatePlaybookProvider(ctx: EvolveContext): PlaybookProvider 
   }
   return { reviewerContext: () => notes.length === 0 ? 'Reviewer playbook önerisi yok.' : notes.map((n) => `- ${n}`).join('\n') };
 }
+
+// I2 (final fix wave): APPLY edilmiş playbook'lar (applyEvolution'un yazdığı
+// .devloop/playbooks/<evoId>.json staging dosyaları) reviewer prompt'una bağlanır — aksi halde
+// apply edilen evrim yalnız dosya olarak durur, üretim reviewer'ına ASLA ulaşmaz (bulunan ÖI2).
+// Fail-soft: bozuk/eksik alanlı dosyalar atılır; dizin yoksa veya playbook-reviewer girdisi yoksa
+// 'Reviewer playbook önerisi yok.' döner (CLI kompozisyonu bu mesajı filtreler).
+export function loadAppliedPlaybooks(repoPath: string): PlaybookProvider {
+  const dir = join(repoPath, '.devloop', 'playbooks');
+  const notes: string[] = [];
+  if (existsSync(dir)) {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const c = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Partial<EvolutionCandidate>;
+        if (c.kind !== 'playbook-reviewer') continue; // generator/policy-tweak staging'i reviewer'ı ilgilendirmez
+        const note = typeof (c.content as { note?: unknown } | undefined)?.note === 'string' ? (c.content as { note: string }).note : '';
+        notes.push(note ? `- ${c.title} — ${note}` : `- ${c.title ?? f}`);
+      } catch { /* bozuk playbook dosyası atılır (fail-soft) */ }
+    }
+  }
+  return { reviewerContext: () => notes.length === 0 ? 'Reviewer playbook önerisi yok.' : notes.join('\n') };
+}

@@ -9,7 +9,7 @@ import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
 import {
   generateEvolutionCandidates, writeShadowCandidates, applyEvolution, loadCandidate, candidatePlaybookProvider,
-  type EvolveContext,
+  loadAppliedPlaybooks, type EvolveContext,
 } from '../evolution/evolve.js';
 import { runEval, type EvalSummary } from '../eval/evalRunner.js';
 import { loadGoldenTasks } from '../eval/golden.js';
@@ -73,9 +73,14 @@ export function buildCli(workDir = process.cwd()): Command {
     // R2 (T4): advisory zinciri llm-reviewer → llm-ensemble. Primary daima koşar; alt (güvenlik+
     // performans rubriği, fallbackModel override) yalnız primary bulgulu veya risk ≥ eşikte koşar.
     // Bu kayıt, policy advisory [llm-ensemble, ...] ile PipelineConfigError penceresini kapatır.
+    // I2 (final fix wave): reviewerLessons ARTIK KOMPOZE — aktif reviewer dersleri (mem) + apply
+    // edilmiş playbook'lar (loadAppliedPlaybooks: .devloop/playbooks staging'i) aynı prompt'a girer;
+    // iki kaynağın 'yok.' bildirimleri filtrelenir (boş kaynak prompt'a kirlilik taşımaz).
+    const playbooks = loadAppliedPlaybooks(repoDir());
+    const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
     const ensemble = new LlmEnsembleStage(
-      new LlmReviewerStage(gateway, mem), // A4: reviewer dersleri buraya
-      new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons: mem }),
+      new LlmReviewerStage(gateway, reviewerLessons), // A4: reviewer dersleri + I2 applied playbook'lar
+      new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons }),
       policy,
     );
     const pipeline = new ReviewPipeline([
@@ -210,9 +215,13 @@ export function buildCli(workDir = process.cwd()): Command {
         new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
         new SecretScanStage(), new MutationStage(policy),
       ];
+      // I2 (final fix wave): review-diff CI yolu da `run` assembly'siyle aynı kompozisyonu kullanır —
+      // applied playbook'lar CI reviewer prompt'undan da eksik kalmasın.
+      const playbooks = loadAppliedPlaybooks(repoDir());
+      const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
       const ensemble = new LlmEnsembleStage(
-        new LlmReviewerStage(gateway, mem),
-        new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons: mem }),
+        new LlmReviewerStage(gateway, reviewerLessons),
+        new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons }),
         policy,
       );
       const gateOverride = { ...policy, gates: ['risk-triage', 'static-gates', 'tests', 'secret-scan', 'mutation-testing'], advisory: [] };
@@ -253,9 +262,14 @@ export function buildCli(workDir = process.cwd()): Command {
         // production eval salt-okunur karşılaştırmadır; BudgetedGateway sarması bilinçli yapılmadı.
         const gateway = createGateway(effPolicy);
         const mem = memory();
+        // I2 (final fix wave): eval --full üretim pipeline'ının donmuş yargıcıdır — reviewerLessons
+        // `run` assembly'siyle AYNI kompozisyon (mem + applied playbook'lar), aksi halde eval üretim
+        // reviewer'ından FARKLI bir prompt'la ölçer (karşılaştırma geçersizleşir).
+        const playbooks = loadAppliedPlaybooks(repoDir());
+        const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
         stages.push(new LlmEnsembleStage(
-          new LlmReviewerStage(gateway, mem),
-          new LlmReviewerAltStage(gateway, { model: effPolicy.llm.fallbackModel, reviewerLessons: mem }),
+          new LlmReviewerStage(gateway, reviewerLessons),
+          new LlmReviewerAltStage(gateway, { model: effPolicy.llm.fallbackModel, reviewerLessons }),
           effPolicy,
         ));
       }
@@ -293,6 +307,10 @@ export function buildCli(workDir = process.cwd()): Command {
       const baseline = evalRunToSummary(baseEv.payload, policy.l3MinGoldenTasks);
       const candidates = generateEvolutionCandidates(ctx, baseline);
       writeShadowCandidates(ctx, candidates); // ÖNCE yazılır — provider shadow eval'e aday notlarını taşır
+      // hüküm (I2 final fix wave): shadow eval reviewerLessons KAYNAĞI BİLINÇLİ OLARAK
+      // loadAppliedPlaybooks DEĞİL — candidatePlaybookProvider. Shadow ADAY playbook'ları
+      // (candidates/) değerlendirir; apply edilmiş staging playbook'lar (.devloop/playbooks)
+      // shadow yargısına karışması istenmez (değerlendirilen şey adayın kendisidir).
       const provider = candidatePlaybookProvider(ctx);
       // Shadow pipeline: `run` komutu assembly'siyle aynı; TEK fark reviewer stage'lerine
       // reviewerLessons olarak candidatePlaybookProvider verilir — aday playbook böylece eval'e
