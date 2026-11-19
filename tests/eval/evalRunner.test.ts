@@ -75,4 +75,25 @@ describe('runEval', () => {
     expect(r.score).toBe(100);
     expect(spyGateway.complete).toHaveBeenCalledTimes(1); // 1 görev × 1 stage çağrısı — runEval fazladan eklemez
   });
+
+  // R15 fix round 1: şemaya uymayan golden dosyası sessizce hariç tutulMAZ — dosya adı summary.invalid
+  // VE EvalRun payload.invalid ile raporlanır (eval harness için zayıf sinyal düzeltmesi).
+  it('geçersiz golden dosyası summary.invalid + EvalRun payload.invalid ile raporlanır', async () => {
+    const dir = makeRepo([GOLDEN]);
+    writeFileSync(join(dir, '.devloop', 'golden', 'bad.task.json'), '{"goldenId": "x"}'); // şema dışı (fixtureDiff/expected yok)
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const r = await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
+    expect(r.goldenCount).toBe(1); // yalnız GEÇERLİ görev koşar
+    expect(r.invalid).toEqual(['bad.task.json']);
+    const ev = store.query({ type: 'EvalRun' })[0];
+    expect(ev.payload.invalid).toEqual(['bad.task.json']); // kanıt zincirinde de taşınır
+    expect(validateChain(store.readAll()).ok).toBe(true);
+  });
+  it('geçersiz dosya yokken invalid boş listedir', async () => {
+    const dir = makeRepo([GOLDEN]);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const r = await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
+    expect(r.invalid).toEqual([]);
+    expect(store.query({ type: 'EvalRun' })[0].payload.invalid).toEqual([]);
+  });
 });

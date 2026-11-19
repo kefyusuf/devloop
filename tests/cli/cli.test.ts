@@ -152,8 +152,8 @@ describe('CLI', () => {
   it('evolve apply: golden gerileme (shadow failed > baseline failed) → hata + playbook staging YAZILMAZ', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli-evo2-'));
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
-    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 2, passed: 2, failed: 0, score: 100, perTask: [], configSnapshot: { mode: 'production' } });
-    await store.append('EvalRun', 'eval-s', '-', 'eval', { evalId: 's1', goldenCount: 2, passed: 1, failed: 1, score: 50, perTask: [], configSnapshot: { candidate: 'evolve-shadow' } });
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 2, passed: 2, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    await store.append('EvalRun', 'eval-s', '-', 'eval', { evalId: 's1', goldenCount: 2, passed: 1, failed: 1, score: 50, invalid: [], perTask: [], configSnapshot: { candidate: 'evolve-shadow' } });
     mkdirSync(join(dir, '.devloop', 'candidates'), { recursive: true });
     writeFileSync(join(dir, '.devloop', 'candidates', 'evo-cli1.json'), JSON.stringify({ evoId: 'evo-cli1', kind: 'playbook-reviewer', title: 'T', content: { note: 'n' }, sourceEvalId: 'b1' }), 'utf8');
     await expect(buildCli(dir).parseAsync(['node', 'devloop', 'evolve', 'apply', 'evo-cli1']))
@@ -165,8 +165,8 @@ describe('CLI', () => {
   it('evolve apply: gerileme yok → ProposalCreated + playbook staging dosyası', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli-evo3-'));
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
-    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 2, passed: 2, failed: 0, score: 100, perTask: [], configSnapshot: { mode: 'production' } });
-    await store.append('EvalRun', 'eval-s', '-', 'eval', { evalId: 's1', goldenCount: 2, passed: 2, failed: 0, score: 100, perTask: [], configSnapshot: { candidate: 'evolve-shadow' } });
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 2, passed: 2, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    await store.append('EvalRun', 'eval-s', '-', 'eval', { evalId: 's1', goldenCount: 2, passed: 2, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { candidate: 'evolve-shadow' } });
     mkdirSync(join(dir, '.devloop', 'candidates'), { recursive: true });
     writeFileSync(join(dir, '.devloop', 'candidates', 'evo-cli2.json'), JSON.stringify({ evoId: 'evo-cli2', kind: 'playbook-reviewer', title: 'T', content: { note: 'n' }, sourceEvalId: 'b1' }), 'utf8');
     const out: string[] = [];

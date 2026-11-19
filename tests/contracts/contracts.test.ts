@@ -65,6 +65,14 @@ describe('faz 3 kontratları', () => {
       configSnapshot: { mode: 'production' },
     } });
     expect(ev.payload.comparedTo).toBeUndefined();
+    // R15 fix round 1: invalid alanı default'lu — alansız (eski store satırları) payload okunur kalır
+    // ve boş listeye düşer; alanlı payload birebir taşınır.
+    expect(ev.payload.invalid).toEqual([]);
+    const ev2 = DevloopEventSchema.parse({ ...env, event_id: 'e2', type: 'EvalRun', payload: {
+      evalId: 'e2', goldenCount: 1, passed: 1, failed: 0, score: 100, invalid: ['bad.task.json'],
+      perTask: [], configSnapshot: { mode: 'production' },
+    } });
+    expect(ev2.payload.invalid).toEqual(['bad.task.json']);
   });
 });
 

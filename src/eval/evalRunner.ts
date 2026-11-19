@@ -10,6 +10,9 @@ import { parseDiff } from '../shell/reviewDiff.js';
 
 export interface EvalSummary {
   evalId: string; goldenCount: number; passed: number; failed: number; score: number;
+  // R15 fix round 1: şemaya uymayan golden dosya adları — koşum dışı bırakılma sessiz DEĞİL,
+  // summary + EvalRun kanıtıyla raporlanır.
+  invalid: string[];
   perTask: Array<{ goldenId: string; pass: boolean; reasons: string[] }>;
   configSnapshot: Record<string, unknown>; l3Active: boolean; comparedTo?: string;
 }
@@ -65,11 +68,10 @@ export async function runEval(args: {
   const prevRuns = args.store.query({ type: 'EvalRun' }).filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun')
     .filter((e) => !('candidate' in e.payload.configSnapshot));
   const comparedTo = args.candidate && prevRuns.length > 0 ? prevRuns[prevRuns.length - 1].payload.evalId : undefined;
-  const summary: EvalSummary = { evalId, goldenCount: perTask.length, passed, failed, score, perTask, configSnapshot, l3Active, ...(comparedTo ? { comparedTo } : {}) };
+  const summary: EvalSummary = { evalId, goldenCount: perTask.length, passed, failed, score, invalid, perTask, configSnapshot, l3Active, ...(comparedTo ? { comparedTo } : {}) };
   await args.store.append('EvalRun', runId, '-', 'eval', {
-    evalId: summary.evalId, goldenCount: summary.goldenCount, passed, failed, score,
+    evalId: summary.evalId, goldenCount: summary.goldenCount, passed, failed, score, invalid,
     perTask: summary.perTask, configSnapshot, ...(comparedTo ? { comparedTo } : {}),
   });
-  void invalid; // invalid listesi CLI raporunda gösterilir
   return summary;
 }

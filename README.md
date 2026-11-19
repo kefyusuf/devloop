@@ -172,7 +172,8 @@ devloop eval --candidate <dir>  # shadow: aday policy ile aynı golden seti (sal
 - **Shadow salt-okunurdur:** `--candidate` koşumu üretim `policy.yaml`/lessons/proposals'a SIFIR yazım
   yapar; yalnız kanıt event'leri düşer. Aday policy dizini `policy.yaml` içermiyorsa komut fail-closed
   hata verir (sessiz varsayılan-policy düşüşü yok).
-- Şemaya uymayan görev dosyaları koşum dışı bırakılmaz-yazılmaz: `invalid` listesinde raporlanır.
+- Şemaya uymayan görev dosyaları koşum dışında bırakılır ama sessiz değildir: dosya adları eval
+  özetindeki **`invalid`** listesinde (ve `EvalRun` kanıt event'inde) raporlanır.
 - Koşum `--full` olmadan LLM çağrısı yapmaz — pipeline gate stage'leriyle (risk-triage, static-gates,
   tests, secret-scan, mutation-testing) deterministik koşar; kanıttaki bulgular yalnız bu stage'lerden
   gelir.

@@ -152,6 +152,9 @@ describe('E2E eval + shadow (R9 — faz 3 T9)', () => {
     // CLI özet kanıtı (stdout JSON) store ile aynı hikayeyi taşır
     expect(prodSummary.score).toBe(66.7);
     expect(prodSummary.configSnapshot.mode).toBe('production');
+    // R15 fix round 1: invalid listesi CLI özetinde taşınır (bu fixture'da tüm görevler geçerli → boş)
+    expect(prodSummary.invalid).toEqual([]);
+    expect(shadowSummary.invalid).toEqual([]);
 
     // (4) DETERMİNİSTİK kanıt: koşumdaki tüm bulgular deterministik gate stage'lerinden —
     // llm-reviewer/llm-ensemble adlı stage'den FindingEmitted YOK; StageVerdict'ler de eval-aggregate.

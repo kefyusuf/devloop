@@ -28,6 +28,9 @@ const P = {
     evalId: z.string(), goldenCount: z.number().int(), passed: z.number().int(), failed: z.number().int(),
     score: z.number(),
     perTask: z.array(z.object({ goldenId: z.string(), pass: z.boolean(), reasons: z.array(z.string()) })),
+    // R15 fix round 1: şemaya uymayan golden dosyaları kanıta YAZILIR (sessiz hariç tutum yok —
+    // eval harness için zayıf sinyal). `.default([])`: eski store satırları (alan yok) okunabilir kalır.
+    invalid: z.array(z.string()).default([]),
     configSnapshot: z.record(z.unknown()), comparedTo: z.string().optional(),
   }),
   ProposalCreated: z.object({

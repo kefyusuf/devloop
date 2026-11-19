@@ -31,10 +31,12 @@ import { TypeScriptAdapter } from '../adapters/typescript/index.js';
 
 // R10 (faz 3 T4): store'daki EvalRun payload'undan EvalSummary rekonstrüksiyonu — l3Active
 // payload'da yoktur, goldenCount >= eşik ile türetilir (evalRunner summary'siyle aynı anlam).
+// R15 fix round 1: invalid listesi payload'dan aynen taşınır (eski satırlarda şema default'u [] verir).
 type EvalRunEvent = Extract<DevloopEvent, { type: 'EvalRun' }>;
 function evalRunToSummary(p: EventPayloadMap['EvalRun'], l3MinGoldenTasks: number): EvalSummary {
   return {
     evalId: p.evalId, goldenCount: p.goldenCount, passed: p.passed, failed: p.failed, score: p.score,
+    invalid: p.invalid,
     perTask: p.perTask, configSnapshot: p.configSnapshot, l3Active: p.goldenCount >= l3MinGoldenTasks,
     ...(p.comparedTo ? { comparedTo: p.comparedTo } : {}),
   };

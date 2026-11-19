@@ -81,7 +81,7 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     };
     // 1 üretim koşumu + 1 shadow koşumu (EvalRun configSnapshot'ta 'candidate') — her biri 1 test-diff
     await emitTestDiff('r-prod-1', 't1');
-    await ctx.store.append('EvalRun', 'eval-shadow-1', '-', 'eval', { evalId: 's1', goldenCount: 1, passed: 1, failed: 0, score: 100, perTask: [], configSnapshot: { candidate: { label: 'x' } } });
+    await ctx.store.append('EvalRun', 'eval-shadow-1', '-', 'eval', { evalId: 's1', goldenCount: 1, passed: 1, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { candidate: { label: 'x' } } });
     await emitTestDiff('eval-shadow-1', 'ts1');
     // shadow hariç yalnız 1 üretim koşumu var → eşik (≥2) altı, aday YOK
     expect(generateEvolutionCandidates(ctx, baseSummary())).toHaveLength(0);
@@ -91,7 +91,7 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     expect(out).toHaveLength(1);
     expect(out[0].kind).toBe('playbook-generator');
     // Ek shadow koşumu (yenisi + yeni bulgu) evoId'yi DEĞİŞTİRMEZ — sayım yalnız üretim koşumları
-    await ctx.store.append('EvalRun', 'eval-shadow-2', '-', 'eval', { evalId: 's2', goldenCount: 1, passed: 0, failed: 1, score: 0, perTask: [], configSnapshot: { candidate: { label: 'x' } } });
+    await ctx.store.append('EvalRun', 'eval-shadow-2', '-', 'eval', { evalId: 's2', goldenCount: 1, passed: 0, failed: 1, score: 0, invalid: [], perTask: [], configSnapshot: { candidate: { label: 'x' } } });
     await emitTestDiff('eval-shadow-2', 'ts2');
     expect(generateEvolutionCandidates(ctx, baseSummary())[0].evoId).toBe(out[0].evoId);
   });
