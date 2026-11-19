@@ -1,17 +1,24 @@
 import { Command } from 'commander';
 import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { loadConfig } from '../config/config.js';
+import { loadConfig, type Policy } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
 import { AnthropicGateway } from '../gateway/gateway.js';
 import { LlmGeneratorBackend } from '../generator/generator.js';
 import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
+import {
+  generateEvolutionCandidates, writeShadowCandidates, applyEvolution, loadCandidate, candidatePlaybookProvider,
+  type EvolveContext,
+} from '../evolution/evolve.js';
+import { runEval, type EvalSummary } from '../eval/evalRunner.js';
+import { loadGoldenTasks } from '../eval/golden.js';
 import { Orchestrator, BudgetedGateway } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
 import { runReviewDiff } from './reviewDiff.js';
 import { ReviewPipeline } from '../pipeline/pipeline.js';
 import type { ReviewStage } from '../contracts/review.js';
+import type { DevloopEvent, EventPayloadMap } from '../contracts/events.js';
 import { RiskTriageStage } from '../pipeline/stages/riskTriage.js';
 import { StaticGatesStage } from '../pipeline/stages/staticGates.js';
 import { TestGateStage } from '../pipeline/stages/testGate.js';
@@ -21,6 +28,26 @@ import { LlmReviewerStage } from '../pipeline/stages/llmReviewer.js';
 import { LlmReviewerAltStage } from '../pipeline/stages/llmReviewerAlt.js';
 import { LlmEnsembleStage } from '../pipeline/stages/llmEnsemble.js';
 import { TypeScriptAdapter } from '../adapters/typescript/index.js';
+
+// R10 (faz 3 T4): store'daki EvalRun payload'undan EvalSummary rekonstrüksiyonu — l3Active
+// payload'da yoktur, goldenCount >= eşik ile türetilir (evalRunner summary'siyle aynı anlam).
+type EvalRunEvent = Extract<DevloopEvent, { type: 'EvalRun' }>;
+function evalRunToSummary(p: EventPayloadMap['EvalRun'], l3MinGoldenTasks: number): EvalSummary {
+  return {
+    evalId: p.evalId, goldenCount: p.goldenCount, passed: p.passed, failed: p.failed, score: p.score,
+    perTask: p.perTask, configSnapshot: p.configSnapshot, l3Active: p.goldenCount >= l3MinGoldenTasks,
+    ...(p.comparedTo ? { comparedTo: p.comparedTo } : {}),
+  };
+}
+// Son production eval = configSnapshot'ta 'candidate' OLMAYAN son EvalRun (evalRunner ile aynı kural);
+// shadow eval = candidate='evolve-shadow' etiketli son EvalRun.
+function lastEvalRun(s: VerdictStore, kind: 'production' | 'shadow'): EvalRunEvent | undefined {
+  const runs = s.query({ type: 'EvalRun' }).filter((e): e is EvalRunEvent => e.type === 'EvalRun');
+  const filtered = runs.filter((e) => kind === 'production'
+    ? !('candidate' in e.payload.configSnapshot)
+    : e.payload.configSnapshot['candidate'] === 'evolve-shadow');
+  return filtered[filtered.length - 1];
+}
 
 export function buildCli(workDir = process.cwd()): Command {
   const program = new Command();
@@ -214,13 +241,73 @@ export function buildCli(workDir = process.cwd()): Command {
       // PipelineConfigError penceresi: advisory yalnız --full'da policy'den alınır; --full'suz
       // koşum ensemble'suz gate setiyle tamamlanır ([] = yalnız gates).
       const pipeline = new ReviewPipeline(stages, { ...effPolicy, gates: effPolicy.gates, advisory: opts.full ? effPolicy.advisory : [] });
-      const { runEval } = await import('../eval/evalRunner.js');
       const summary = await runEval({
         repoPath: repoDir(), pipeline, policy: effPolicy, store: store(),
         l3MinGoldenTasks: effPolicy.l3MinGoldenTasks,
         ...(opts.candidate ? { candidate: { label: opts.candidate } } : {}),
       });
       console.log(JSON.stringify(summary, null, 2));
+    });
+
+  // R10 (faz 3 T4): L3 evrim — `evolve --shadow` golden eşikli playbook adaylarını üretir ve aynı
+  // golden seti üzerinde shadow eval koşar; `evolve apply <evoId>` adayı golden-gerileme kapısıyla
+  // playbook staging'e yazar (A5: yalnız staging dosyası + ProposalCreated kanıtı — policy/lint
+  // otomatik değişmez, insan devreye alır; policy-tweak shadow'u faz 4'tür, v3 playbook-only shadow).
+  const evolveCtx = (policy: Policy): EvolveContext => ({
+    store: store(),
+    playbookDir: join(repoDir(), '.devloop', 'playbooks'),
+    candidateDir: join(repoDir(), '.devloop', 'candidates'),
+    goldenCount: loadGoldenTasks(repoDir()).tasks.length,
+    l3MinGoldenTasks: policy.l3MinGoldenTasks,
+  });
+  const evolve = program.command('evolve').description('L3 evrim: shadow aday üretimi + golden-gerileme kapılı apply');
+  evolve.option('--shadow', 'playbook aday üretimi + shadow eval')
+    .action(async (opts: { shadow?: boolean }) => {
+      if (!opts.shadow) throw new Error('--shadow gerekli (v3: yalnız shadow modu desteklenir)');
+      const { policy } = loadConfig(repoDir());
+      const s = store();
+      const ctx = evolveCtx(policy);
+      const baseEv = lastEvalRun(s, 'production');
+      if (!baseEv) throw new Error('Önce production eval koşun');
+      const baseline = evalRunToSummary(baseEv.payload, policy.l3MinGoldenTasks);
+      const candidates = generateEvolutionCandidates(ctx, baseline);
+      writeShadowCandidates(ctx, candidates); // ÖNCE yazılır — provider shadow eval'e aday notlarını taşır
+      const provider = candidatePlaybookProvider(ctx);
+      // Shadow pipeline: `run` komutu assembly'siyle aynı; TEK fark reviewer stage'lerine
+      // reviewerLessons olarak candidatePlaybookProvider verilir — aday playbook böylece eval'e
+      // GERÇEKTEN girer. Policy = production policy (playbook-only shadow). Eval yolu bütçe sayacı
+      // TUTMAZ (eval komutuyla aynı hüküm — shadow, harcayan üretim çağrısı değildir).
+      const adapter = new TypeScriptAdapter();
+      const gateway = new AnthropicGateway(policy);
+      const pipeline = new ReviewPipeline([
+        new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
+        new SecretScanStage(), new MutationStage(policy),
+        new LlmEnsembleStage(
+          new LlmReviewerStage(gateway, provider),
+          new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons: provider }),
+          policy,
+        ),
+      ], policy);
+      const shadowEval = await runEval({
+        repoPath: repoDir(), pipeline, policy, store: s, l3MinGoldenTasks: policy.l3MinGoldenTasks,
+        candidate: { label: 'evolve-shadow' },
+      });
+      console.log(JSON.stringify({ candidates, shadowEval, baseline: { evalId: baseline.evalId, failed: baseline.failed, score: baseline.score } }, null, 2));
+    });
+  evolve.command('apply').argument('<evoId>')
+    .description('adayı golden-gerileme kapısıyla playbook staging dizinine yaz')
+    .action(async (evoId: string) => {
+      const { policy } = loadConfig(repoDir());
+      const s = store();
+      const ctx = evolveCtx(policy);
+      const candidate = loadCandidate(ctx, evoId);
+      if (!candidate) throw new Error('Aday bulunamadı');
+      const baseEv = lastEvalRun(s, 'production');
+      if (!baseEv) throw new Error('Önce production eval koşun');
+      const shadowEv = lastEvalRun(s, 'shadow');
+      if (!shadowEv) throw new Error('Önce evolve --shadow koşun');
+      await applyEvolution(ctx, candidate, evalRunToSummary(shadowEv.payload, policy.l3MinGoldenTasks), evalRunToSummary(baseEv.payload, policy.l3MinGoldenTasks));
+      console.log(`Evrim uygulandı: ${evoId} — playbook staging dosyası yazıldı (insan devreye alır) + ProposalCreated kaydedildi.`);
     });
   return program;
 }

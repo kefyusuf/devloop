@@ -31,7 +31,9 @@ const P = {
     configSnapshot: z.record(z.unknown()), comparedTo: z.string().optional(),
   }),
   ProposalCreated: z.object({
-    proposalId: z.string(), kind: z.enum(['lint-rule', 'regression-test', 'policy-tweak']),
+    // R10 (faz 3 T4): L3 evrim kindleri — playbook-reviewer/playbook-generator (playbook-only
+    // shadow); policy-tweak zaten vardı, L3 aday union'ında kalır (shadow'ı faz 4).
+    proposalId: z.string(), kind: z.enum(['lint-rule', 'regression-test', 'policy-tweak', 'playbook-reviewer', 'playbook-generator']),
     category: z.string(), title: z.string(), content: z.record(z.unknown()),
     parentDecisionEventIds: z.array(z.string()),
   }),

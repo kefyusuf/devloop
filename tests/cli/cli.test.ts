@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildCli } from '../../src/shell/cli.js';
 import { VerdictStore } from '../../src/store/store.js';
 import { generateProposals } from '../../src/learning/learn.js';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -75,5 +75,93 @@ describe('CLI', () => {
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     const ev = store.query({ type: 'EvalRun' })[0];
     expect(ev.payload.configSnapshot).toMatchObject({ mode: 'production' });
+  });
+
+  // R10 (faz 3 T4): evolve --shadow — production baseline bulunamazsa hata; shadow eval
+  // configSnapshot.candidate='evolve-shadow' yazar; çıktı JSON parse edilebilir.
+  it('evolve --shadow: production eval yok → hata', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-evo0-'));
+    await expect(buildCli(dir).parseAsync(['node', 'devloop', 'evolve', '--shadow']))
+      .rejects.toThrow('Önce production eval koşun');
+  });
+
+  it('evolve --shadow: çıktı JSON parse edilebilir; shadowEval candidate=evolve-shadow; baseline production evalId', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-evo1-'));
+    // policy.yaml: l3MinGoldenTasks=1 (test küçültmesi) — loadConfig yalnız repoDir()'den okur
+    const policyYaml = readFileSync(join(process.cwd(), 'policy.yaml'), 'utf8').replace('l3MinGoldenTasks: 50', 'l3MinGoldenTasks: 1');
+    writeFileSync(join(dir, 'policy.yaml'), policyYaml, 'utf8');
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify({
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    }));
+    await buildCli(dir).parseAsync(['node', 'devloop', 'eval']); // baseline: production EvalRun
+    // L3 sinyali: 3 koşumda off-by-one false-positive ret (l3MinGoldenTasks=1 → eşik geçilir)
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    for (const [i, run] of ['r1', 'r2', 'r3'].entries()) {
+      const art = await store.append('ArtifactProduced', run, `t${i}`, 'b', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
+      const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category: 'off-by-one', severity: 'required', confidence: 0.9, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
+      await store.append('HumanDecision', run, `t${i}`, 'h', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [f.event_id] });
+    }
+    // Shadow pipeline ensemble içerir (run komutu assembly'si) — API anahtarı yokken reviewer
+    // stage'leri fail-fast GatewayError verir (ağ yok); advisory olduğundan eval yine pass olur.
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    try {
+      await buildCli(dir).parseAsync(['node', 'devloop', 'evolve', '--shadow']);
+    } finally {
+      console.log = origLog;
+      if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
+    }
+    const parsed = JSON.parse(out.join('\n'));
+    expect(Array.isArray(parsed.candidates)).toBe(true);
+    expect(parsed.candidates).toHaveLength(1);
+    expect(parsed.candidates[0].kind).toBe('playbook-reviewer');
+    expect(parsed.shadowEval.evalId).toBeDefined();
+    expect(parsed.shadowEval.configSnapshot.candidate).toBe('evolve-shadow');
+    expect(parsed.baseline.evalId).toBeDefined();
+    // Golden gate'leri (lint/typecheck/tests) geçici dizinde gerçekten koşar — failed değeri
+    // ortam girdisidir; sözleşme: baseline {evalId, failed, score} alanlarını taşır.
+    expect(typeof parsed.baseline.failed).toBe('number');
+    expect(typeof parsed.baseline.score).toBe('number');
+    expect(parsed.shadowEval.goldenCount).toBe(1); // fixture'daki tek golden task
+    // aday dosyası shadow aday dizinine yazıldı
+    expect(existsSync(join(dir, '.devloop', 'candidates', `${parsed.candidates[0].evoId}.json`))).toBe(true);
+  });
+
+  it('evolve apply: golden gerileme (shadow failed > baseline failed) → hata + playbook staging YAZILMAZ', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-evo2-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 2, passed: 2, failed: 0, score: 100, perTask: [], configSnapshot: { mode: 'production' } });
+    await store.append('EvalRun', 'eval-s', '-', 'eval', { evalId: 's1', goldenCount: 2, passed: 1, failed: 1, score: 50, perTask: [], configSnapshot: { candidate: 'evolve-shadow' } });
+    mkdirSync(join(dir, '.devloop', 'candidates'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'candidates', 'evo-cli1.json'), JSON.stringify({ evoId: 'evo-cli1', kind: 'playbook-reviewer', title: 'T', content: { note: 'n' }, sourceEvalId: 'b1' }), 'utf8');
+    await expect(buildCli(dir).parseAsync(['node', 'devloop', 'evolve', 'apply', 'evo-cli1']))
+      .rejects.toThrow('golden gerileme');
+    expect(existsSync(join(dir, '.devloop', 'playbooks', 'evo-cli1.json'))).toBe(false);
+    expect(store.query({ type: 'ProposalCreated' })).toHaveLength(0);
+  });
+
+  it('evolve apply: gerileme yok → ProposalCreated + playbook staging dosyası', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-evo3-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 2, passed: 2, failed: 0, score: 100, perTask: [], configSnapshot: { mode: 'production' } });
+    await store.append('EvalRun', 'eval-s', '-', 'eval', { evalId: 's1', goldenCount: 2, passed: 2, failed: 0, score: 100, perTask: [], configSnapshot: { candidate: 'evolve-shadow' } });
+    mkdirSync(join(dir, '.devloop', 'candidates'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'candidates', 'evo-cli2.json'), JSON.stringify({ evoId: 'evo-cli2', kind: 'playbook-reviewer', title: 'T', content: { note: 'n' }, sourceEvalId: 'b1' }), 'utf8');
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    try {
+      await buildCli(dir).parseAsync(['node', 'devloop', 'evolve', 'apply', 'evo-cli2']);
+    } finally {
+      console.log = origLog;
+    }
+    expect(out.join('\n')).toContain('evo-cli2');
+    expect(store.query({ type: 'ProposalCreated' })).toHaveLength(1);
+    expect(existsSync(join(dir, '.devloop', 'playbooks', 'evo-cli2.json'))).toBe(true);
   });
 });
