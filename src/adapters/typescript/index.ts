@@ -135,8 +135,12 @@ export class TypeScriptAdapter implements StackAdapter {
    * R13: policy verilirse sandbox modu uygulanır — docker modda araç koşumları dockerizeSpawn ile
    * konteynere sarılır (bin resolve ATLANIR); verilmmezse/default host modunda mevcut davranış
    * (resolveBin + process.execPath) korunur. Mevcut çağrılar (default-ctor) etkilenmez.
+   * I2 (fix round 1): originalRepoPath — ORİJİNAL reponun yolu (CLI'da repoDir()/deps.repoPath);
+   * docker modda node_modules'u /workspace/node_modules'a bind edilir (hedef repo kendi
+   * toolchain'i). Verilmediyse ikinci bind yok — repo toolchain'i yoksa npx fail-closed error
+   * üretir (dokümante davranış).
    */
-  constructor(private readonly policy?: Policy) {}
+  constructor(private readonly policy?: Policy, private readonly originalRepoPath?: string) {}
 
   /**
    * Araç koşumu — mod seçimi tek kapı:
@@ -147,7 +151,7 @@ export class TypeScriptAdapter implements StackAdapter {
    */
   private async runToolIn(repoPath: string, pkg: string, subpath: string, errorSuffix: string, args: string[], timeoutMs?: number): Promise<ToolOutput> {
     if (this.policy?.sandbox.mode === 'docker') {
-      const sp = dockerizeSpawn({ repoPath, policy: this.policy, bin: '', toolArgs: [pkg, ...args] });
+      const sp = dockerizeSpawn({ repoPath, originalRepoPath: this.originalRepoPath, policy: this.policy, bin: '', toolArgs: [pkg, ...args] });
       return spawnTool(sp.cmd, sp.args, repoPath, timeoutMs ?? SPAWN.timeout);
     }
     const bin = resolveBin(repoPath, subpath);

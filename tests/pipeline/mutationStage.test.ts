@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import * as adapter from '../../src/adapters/typescript/index.js';
 import { MutationStage, parseMutationScore, survivedInTouchedFiles } from '../../src/pipeline/stages/mutationStage.js';
 import { ReviewPipeline } from '../../src/pipeline/pipeline.js';
-import { loadConfig } from '../../src/config/config.js';
+import { loadConfig, type Policy } from '../../src/config/config.js';
 import type { ReviewContext } from '../../src/contracts/review.js';
 
 // Adapter modülü mock'lanır: birim testlerde resolveBin/runTool kontrol edilir; mock ayarlanmadığında
@@ -64,6 +64,27 @@ describe('MutationStage birim', () => {
     const r = await new MutationStage(policy()).evaluate(mkCtx(dir));
     expect(r.status).toBe('skipped');
     expect(r.findings).toEqual([]);
+  });
+
+  // I3 (fix round 1): docker sandbox containment faz 3.1'e ertelendi (ledger) — bu taskta guard
+  // LOUD olur: docker mod + stryker config → fail-closed throw → pipeline 'error' (sessiz
+  // host-run YOK; sandbox.mode=host kullanın mesajı açık).
+  it('docker mod + stryker config → fail-closed throw; pipeline status error (sessiz host-run yok)', async () => {
+    const dir = repoWithConfig();
+    const dp: Policy = { ...policy(), sandbox: { mode: 'docker', image: 'node:20-bookworm-slim' } };
+    const stage = new MutationStage(dp);
+    await expect(stage.evaluate(mkCtx(dir)))
+      .rejects.toThrow('Mutation gate docker sandbox henüz desteklenmiyor (faz 3.1) — sandbox.mode=host kullanın');
+    // docker mod + config YOK → hâlâ skipped (guard yalnız gerçekte koşulacak yerde devreye girer)
+    const empty = mkdtempSync(join(tmpdir(), 'mut-'));
+    expect((await new MutationStage(dp).evaluate(mkCtx(empty))).status).toBe('skipped');
+    // pipeline düzeyi: stage throw → status 'error' + errorMessage taşınır
+    const p = new ReviewPipeline([stage], { ...dp, gates: ['mutation-testing'], advisory: [] });
+    const r = await p.run(mkCtx(dir));
+    expect(r.verdicts[0].status).toBe('error');
+    expect(r.verdicts[0].errorMessage).toContain('faz 3.1');
+    expect(r.passed).toBe(false);
+    expect(runToolMock).not.toHaveBeenCalled(); // sessiz host-run kanıtı yok — spawn hiç başlamaz
   });
 
   it('skor < eşik → fail + critical mutation bulgusu', async () => {

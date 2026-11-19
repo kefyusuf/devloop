@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { execFile, execSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -22,45 +22,71 @@ const dockerPolicy: Policy = { ...runBase, sandbox: { mode: 'docker', image: 'no
 const hostPolicy: Policy = { ...runBase, sandbox: { mode: 'host', image: 'node:20-bookworm-slim' } };
 
 describe('dockerizeSpawn (R13)', () => {
-  const repoPath = 'C:\\Users\\repo\\proj'; // backslash — mount forward-slash'e normalize edilir
-  const envFlags = Object.entries(safeEnv()).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+  // I1 hükmü: -e flag'leri YALNIZ GIT_*/SSH_* önekli değişkenleri taşır (case-insensitive) —
+  // PATH/SYSTEMROOT/COMSPEC/TEMP/HOME vb. image ENV'ini EZMESİN (konteyner tmp kendi).
+  const gitEnvFlags = (): string[] => Object.entries(safeEnv())
+    .filter(([k]) => /^(GIT_|SSH_)/i.test(k))
+    .flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+  const extractEnvPairs = (args: string[]): Array<[string, string]> => {
+    const pairs: Array<[string, string]> = [];
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-e') {
+        const kv = args[i + 1] ?? '';
+        pairs.push([kv.split('=')[0] ?? '', kv.split('=').slice(1).join('=')]);
+      }
+    }
+    return pairs;
+  };
+  afterEach(() => { vi.unstubAllEnvs(); });
 
-  it('docker modu: cmd=docker; run --rm -v(forward-slash mount) -w /workspace [safeEnv -e bloğu] --network none image npx toolArgs sırası', () => {
-    const r = dockerizeSpawn({ repoPath, policy: dockerPolicy, bin: 'host-yolunda-kalan.js', toolArgs: ['tsc', '--version'] });
+  it('docker modu: run --rm -v worktree -v original/node_modules -w /workspace [-e bloğu] --network none image npx toolArgs (sıra hükmü, fix round 1)', () => {
+    vi.stubEnv('GIT_DIR', 'C:\\repo\\.git');
+    vi.stubEnv('GIT_CONFIG', '/dev/null');
+    const r = dockerizeSpawn({
+      repoPath: 'C:\\repo\\.devloop\\worktrees\\run1234-t1', // backslash + .devloop/worktrees yolu normalize edilir
+      originalRepoPath: 'C:\\Users\\repo\\proj',
+      policy: dockerPolicy, bin: 'host-yolunda-kalan.js', toolArgs: ['tsc', '--version'],
+    });
     expect(r.cmd).toBe('docker');
     expect(r.args).toEqual([
       'run',
       '--rm',
-      '-v', 'C:/Users/repo/proj:/workspace', // backslash normalize — forward-slash mount
+      '-v', 'C:/repo/.devloop/worktrees/run1234-t1:/workspace',           // worktree mount — forward-slash normalize
+      '-v', 'C:/Users/repo/proj/node_modules:/workspace/node_modules',    // I2: hedef reponun KENDİ toolchain'i
       '-w', '/workspace',
-      ...envFlags, // safeEnv alt kümesi -e KEY=VALUE — splice(6) hükmü: -w /workspace ile --network arasına
+      ...gitEnvFlags(), // I1: yalnız GIT_*/SSH_* — blok -w /workspace ile --network arasında
       '--network', 'none',
       'node:20-bookworm-slim',
       'npx', 'tsc', '--version', // toolArgs aynen — docker modda bin resolve ATLANIR, konteyner içi npx çözer
     ]);
   });
 
-  it('host modu: spawn değişmez — { cmd: bin, args: toolArgs }', () => {
-    const r = dockerizeSpawn({ repoPath: '/repo', policy: hostPolicy, bin: '/repo/node_modules/tsc/bin/tsc.js', toolArgs: ['--noEmit'] });
-    expect(r).toEqual({ cmd: '/repo/node_modules/tsc/bin/tsc.js', args: ['--noEmit'] });
+  it('I1: -e yalnız GIT_*/SSH_* — ANTHROPIC_API_KEY / PATH / SYSTEMROOT YOK, GIT_DIR / GIT_CONFIG VAR', () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-test');
+    vi.stubEnv('GIT_DIR', '.git');
+    vi.stubEnv('GIT_CONFIG', 'ref:refs/heads/main');
+    const r = dockerizeSpawn({ repoPath: '/repo', originalRepoPath: '/orig', policy: dockerPolicy, bin: '', toolArgs: ['tsc'] });
+    const keys = extractEnvPairs(r.args).map(([k]) => k);
+    expect(keys).toContain('GIT_DIR');
+    expect(keys).toContain('GIT_CONFIG');
+    expect(keys.some((k) => k === 'PATH')).toBe(false);
+    expect(keys.some((k) => k === 'SYSTEMROOT')).toBe(false);
+    expect(keys.some((k) => k === 'ANTHROPIC_API_KEY')).toBe(false); // sır konteynere sızmaz
+    expect(keys.every((k) => /^(GIT_|SSH_)/i.test(k))).toBe(true);
+    expect(keys.every((k) => Object.keys(safeEnv()).includes(k))).toBe(true); // safeEnv dışı hiçbir anahtar taşınmaz
   });
 
-  it('docker modu -e bloğu: tam olarak safeEnv anahtar kümesi taşınır (I2 — safeEnv dışı sır sızmaz)', () => {
+  it('I2: originalRepoPath verilmedi → node_modules bind YOK (npx fail-closed error — dokümante davranış)', () => {
     const r = dockerizeSpawn({ repoPath: '/repo', policy: dockerPolicy, bin: '', toolArgs: ['tsc'] });
-    const pairs: Array<[string, string]> = [];
-    for (let i = 0; i < r.args.length; i++) {
-      if (r.args[i] === '-e') {
-        const kv = r.args[i + 1] ?? '';
-        pairs.push([kv.split('=')[0] ?? '', kv.split('=').slice(1).join('=')]);
-      }
-    }
-    const env = safeEnv();
-    expect(pairs.map(([k]) => k).sort()).toEqual(Object.keys(env).sort());
-    expect(pairs.some(([k]) => k === 'ANTHROPIC_API_KEY')).toBe(false); // sır konteynere sızmaz
-    // -e bloğu konum hükmü: -w /workspace ile --network arasında
-    const firstE = r.args.indexOf('-e');
-    expect(r.args[firstE - 1]).toBe('/workspace');
-    expect(r.args.indexOf('--network')).toBeGreaterThan(firstE);
+    expect(r.args.filter((a) => a === '-v')).toHaveLength(1); // yalnız worktree bind
+    expect(r.args.some((a) => a.endsWith(':/workspace/node_modules'))).toBe(false);
+    expect(r.args[2]).toBe('-v');
+    expect(r.args[3]).toBe('/repo:/workspace');
+  });
+
+  it('host modu: spawn değişmez — { cmd: bin, args: toolArgs }', () => {
+    const r = dockerizeSpawn({ repoPath: '/repo', originalRepoPath: '/orig', policy: hostPolicy, bin: '/repo/node_modules/tsc/bin/tsc.js', toolArgs: ['--noEmit'] });
+    expect(r).toEqual({ cmd: '/repo/node_modules/tsc/bin/tsc.js', args: ['--noEmit'] });
   });
 });
 
@@ -133,12 +159,13 @@ describe('Orchestrator docker sandbox aktivasyonu (R13)', () => {
 
 // R13: gerçek konteyner koşumu — yalnız DEVLOOP_DOCKER=1 ile (Docker Desktop kurulu + daemon
 // çalışıyor gerektirir; CI/geliştirici makinesinde Docker yoksa koşum skip olur).
-// Konteyner içi `npx tsc` mount edilen reponun kendi node_modules'undan çözülür (--network none).
+// Konteyner içi `npx tsc` mount edilen reponun kendi node_modules'undan çözülür (--network none;
+// I2: devloop node_modules'u ayrıca /workspace/node_modules'a bind edilir).
 describe('gerçek docker koşumu (DEVLOOP_DOCKER=1)', () => {
   const enabled = process.env.DEVLOOP_DOCKER === '1';
   it.skipIf(!enabled)('dockerizeSpawn çıktısıyla konteynerde npx tsc --version başarılı', async () => {
     const runReal = promisify(execFile);
-    const r = dockerizeSpawn({ repoPath: process.cwd(), policy: dockerPolicy, bin: '', toolArgs: ['tsc', '--version'] });
+    const r = dockerizeSpawn({ repoPath: process.cwd(), originalRepoPath: process.cwd(), policy: dockerPolicy, bin: '', toolArgs: ['tsc', '--version'] });
     const out = await runReal(r.cmd, r.args, { timeout: 300_000 });
     expect(out.stdout).toContain('Version');
   }, 300_000);

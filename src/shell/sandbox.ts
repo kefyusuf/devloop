@@ -22,23 +22,39 @@ export async function dockerAvailable(fetchlessProbe?: typeof execFile): Promise
 }
 
 /**
- * R13: koşullu docker spawn sarmalayıcı.
+ * R13 (fix round 1 hükümleriyle): koşullu docker spawn sarmalayıcı.
  * - host modu: spawn DEĞİŞMEZ — { cmd: bin, args: toolArgs } (mevcut resolveBin + process.execPath
  *   davranışı korunur; çağıran host yolunu doldurur).
  * - docker modu: bin resolve ATLANIR — konteyner içi `npx <toolArgs>` hedef reponun KENDİ
- *   toolchain'ini çözer (worktree mount /workspace; repo node_modules mount'ta olduğundan
- *   --network none altında registry erişimi olmadan yerel çözümleme çalışır). toolArgs aracı adını
- *   içerir (ör. ['tsc', '--version']) — args zaten tool-only, bin parametresi docker modda kullanılmaz.
+ *   toolchain'ini çözer. toolArgs aracı adını içerir (ör. ['tsc', '--version']) — args zaten
+ *   tool-only, bin parametresi docker modda kullanılmaz.
  *
- * safeEnv alt kümesi (PATH/SYSTEMROOT/TEMP/HOME vb. — I2 sır filtresi) `-e KEY=VALUE` flag'leriyle
- * kontrat hükmü (splice index 6) gereği `-w /workspace` ile `--network` ARASINA girer.
+ * I2 mount stratejisi (iki bind):
+ * - worktree → /workspace (repoPath; orchestrator'da .devloop/worktrees/<runId>-<task> altında).
+ * - originalRepoPath verilmişse ORİJİNAL reponun node_modules'u → /workspace/node_modules
+ *   (konteyner içi parent-walk eşdeğeri — npx /workspace'ten yerel çözümleme yapar; --network
+ *   none altında registry erişimi yok). originalRepoPath verilmediyse ikinci bind YOK — repo
+ *   toolchain'i konteynerde yoksa npx fail-closed error üretir (dokümante davranış; sessiz
+ *   host-fallback yok).
+ *
+ * I1 env hükmü: -e flag'leri YALNIZ 'GIT_' / 'SSH_' önekli değişkenleri taşır (case-insensitive;
+ * safeEnv'in git/ssh kimlik akışı kuralı). PATH/SYSTEMROOT/COMSPEC/TEMP/HOME vb. TÜMÜ hariç
+ * tutulur — image ENV PATH aynen kalır, konteyner tmp kendi. safeEnv DEĞİŞMEDİ (host modu
+ * kullanıcıları etkilenmez); filtre dockerizeSpawn'da yaşar.
  */
-export function dockerizeSpawn(args: { repoPath: string; policy: Policy; bin: string; toolArgs: string[] }): { cmd: string; args: string[] } {
-  const { policy, bin, toolArgs, repoPath } = args;
+export function dockerizeSpawn(args: { repoPath: string; originalRepoPath?: string; policy: Policy; bin: string; toolArgs: string[] }): { cmd: string; args: string[] } {
+  const { policy, bin, toolArgs, repoPath, originalRepoPath } = args;
   if (policy.sandbox.mode !== 'docker') return { cmd: bin, args: toolArgs };
-  const dockerArgs = ['run', '--rm', '-v', `${repoPath.replaceAll('\\', '/')}:/workspace`, '-w', '/workspace', '--network', 'none', policy.sandbox.image, 'npx', ...toolArgs];
-  // I2: konteynere yalnız safeEnv izinli ayak izi taşınır (API anahtarı sızmaz)
-  const envFlags = Object.entries(safeEnv()).flatMap(([key, value]) => ['-e', `${key}=${value}`]);
-  dockerArgs.splice(6, 0, ...envFlags);
+  const dockerArgs = ['run', '--rm', '-v', `${repoPath.replaceAll('\\', '/')}:/workspace`];
+  if (originalRepoPath !== undefined) {
+    dockerArgs.push('-v', `${originalRepoPath.replaceAll('\\', '/')}/node_modules:/workspace/node_modules`);
+  }
+  dockerArgs.push('-w', '/workspace', '--network', 'none', policy.sandbox.image, 'npx', ...toolArgs);
+  // I1: -e bloğu '-w /workspace' ile '--network' ARASINA girer (ilk hükmün konum semantiği;
+  // index opsiyonel node_modules bind'inden bağımsız hesaplanır)
+  const envFlags = Object.entries(safeEnv())
+    .filter(([key]) => /^(GIT_|SSH_)/i.test(key))
+    .flatMap(([key, value]) => ['-e', `${key}=${value}`]);
+  dockerArgs.splice(dockerArgs.indexOf('-w') + 2, 0, ...envFlags);
   return { cmd: 'docker', args: dockerArgs };
 }

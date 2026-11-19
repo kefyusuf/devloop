@@ -67,6 +67,12 @@ export class MutationStage implements ReviewStage {
     if (!existsSync(join(ctx.repoPath, 'stryker.config.json'))) {
       return { status: 'skipped', findings: [], durationMs: Date.now() - t0 };
     }
+    // I3 (fix round 1): mutation containment faz 3.1'e ertelendi (ledger) — stryker konteynerde
+    // vitest runner'ı gerektirir (ağır plumbing). Docker modda sessiz host-run A6 ihlali olurdu:
+    // fail-closed throw → pipeline 'error'; kullanıcıya açık yönlendirme (host kullanın).
+    if (this.policy.sandbox.mode === 'docker') {
+      throw new Error('Mutation gate docker sandbox henüz desteklenmiyor (faz 3.1) — sandbox.mode=host kullanın');
+    }
     const bin = resolveBin(ctx.repoPath, '@stryker-mutator/core/bin/stryker.js');
     if (!bin) throw new Error('stryker çözümlenemedi (fail-closed)');
     // R11 (faz 3 T5): risk-tiered kapsam — sabit ilk-10 yerine risk-ölçekli seçim. Triaj proxy'si
