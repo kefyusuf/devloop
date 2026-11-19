@@ -91,6 +91,17 @@ describe('applyArtifact güvenliği', () => {
     await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'link-dir/target/sub/evil.ts', content: 'x' }] })).rejects.toThrow();
     expect(existsSync(join(outsideDir, 'sub'))).toBe(false);
   });
+  it('denylist: politika/kanıt/bağımlılık yüzeyleri reddedilir (I3 — fail-closed)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ap7-'));
+    const denied = ['policy.yaml', '.devloop/evil.ts', '.gitignore', 'package.json'];
+    for (const path of denied) {
+      const artifact = { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path, content: 'evil' }] };
+      await expect(applyArtifact(dir, artifact), path).rejects.toThrow('Yasaklı yol reddedildi');
+    }
+    // normal kaynak dosyası hâlâ yazılır
+    await applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'src/x.ts', content: 'export {};' }] });
+    expect(readFileSync(join(dir, 'src', 'x.ts'), 'utf8')).toBe('export {};');
+  });
   it('asılı sembolik bağ hedefi reddedilir; bağ ötesine yazılmaz', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ap6-'));
     const outsideDir = mkdtempSync(join(tmpdir(), 'ap6-out-'));

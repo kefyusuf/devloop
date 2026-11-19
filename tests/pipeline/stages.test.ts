@@ -3,7 +3,7 @@ import { StaticGatesStage } from '../../src/pipeline/stages/staticGates.js';
 import { TestGateStage } from '../../src/pipeline/stages/testGate.js';
 import { SecretScanStage } from '../../src/pipeline/stages/secretScan.js';
 import { MutationStubStage } from '../../src/pipeline/stages/mutationStub.js';
-import { TypeScriptAdapter, resolveBin, classifyRejection, evaluateTestResult } from '../../src/adapters/typescript/index.js';
+import { TypeScriptAdapter, resolveBin, classifyRejection, evaluateTestResult, evaluateStaticTool } from '../../src/adapters/typescript/index.js';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -105,5 +105,17 @@ describe('A6 saf sınıflandırıcılar', () => {
   });
   it('evaluateTestResult: başarısız özet → fail (davranış değişmez)', () => {
     expect(evaluateTestResult('Tests  2 failed | 3 passed (5)', 'out', true).passed).toBe(false);
+  });
+  it('evaluateStaticTool (I8): nonzero exit + ayrıştırılabilir bulgu yok → throw (fail-closed)', () => {
+    expect(evaluateStaticTool('ayrıştırılamaz çıktı', false, [])).toBe('throw');
+    expect(evaluateStaticTool('', false, [])).toBe('throw');
+  });
+  it('evaluateStaticTool (I8): nonzero exit + bulgu var → normal hata yolu (throw yok)', () => {
+    const finding = { id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, evidence: { file: 'a.ts', line: 1 } };
+    expect(evaluateStaticTool('json çıktı', false, [finding])).toBe('pass');
+  });
+  it('evaluateStaticTool (I8): exit 0 → pass (bulgu olsun olmasın)', () => {
+    expect(evaluateStaticTool('', true, [])).toBe('pass');
+    expect(evaluateStaticTool('[{}]', true, [{}])).toBe('pass');
   });
 });

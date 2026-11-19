@@ -101,23 +101,43 @@ export function evaluateTestResult(summary: string, fullOutput: string, exitedCl
   return parsed;
 }
 
+/**
+ * I8 (final review): statik araç nonzero exit ile dönerse ama çıktısından bulgu ayrıştırılamıyorsa
+ * bu, "temiz geçiş" ile AYRIŞTIRILAMAZ — gate bozuk ya da çıktı kesik demektir → fail-closed throw.
+ * Nonzero exit + ayrıştırılabilir bulgu → normal lint/tip hata yolu ('pass': bulgular gate'i fail eder).
+ */
+export function evaluateStaticTool(stdout: string, exitedCleanly: boolean, findings: ReadonlyArray<unknown>): 'pass' | 'throw' {
+  if (!exitedCleanly && findings.length === 0) return 'throw';
+  return 'pass';
+}
+
 export class TypeScriptAdapter implements StackAdapter {
   readonly id = 'typescript';
 
   async lint(repoPath: string): Promise<Finding[]> {
     const bin = resolveBin(repoPath, 'eslint/bin/eslint.js');
     if (bin === null) throw new Error(`eslint çözümlenemedi (hedef repo + devloop node_modules): static-gates gate hatası`);
-    const { stdout, killed, truncated } = await runTool(repoPath, bin, ['-f', 'json', '.']);
+    const { stdout, stderr, killed, truncated, exitedCleanly } = await runTool(repoPath, bin, ['-f', 'json', '.']);
     if (killed || truncated) throw new Error('eslint koşumu timeout/maxBuffer ile kesildi — çıktı güvenilmez: static-gates gate hatası');
-    return parseEslintJson(stdout);
+    const findings = parseEslintJson(stdout);
+    // I8: nonzero exit + ayrıştırılabilir bulgu yok → sessiz pass riski — fail-closed (stderr tanı ile)
+    if (evaluateStaticTool(stdout, exitedCleanly, findings) === 'throw') {
+      throw new Error(`eslint nonzero exit ama ayrıştırılabilir bulgu yok — çıktı güvenilmez, fail-closed: static-gates gate hatası${stderr ? ` — stderr: ${stderr.slice(0, 300)}` : ''}`);
+    }
+    return findings;
   }
 
   async typecheck(repoPath: string): Promise<Finding[]> {
     const bin = resolveBin(repoPath, 'typescript/bin/tsc');
     if (bin === null) throw new Error(`tsc çözümlenemedi (hedef repo + devloop node_modules): static-gates gate hatası`);
-    const { stdout, killed, truncated } = await runTool(repoPath, bin, ['--noEmit', '--pretty', 'false']);
+    const { stdout, stderr, killed, truncated, exitedCleanly } = await runTool(repoPath, bin, ['--noEmit', '--pretty', 'false']);
     if (killed || truncated) throw new Error('tsc koşumu timeout/maxBuffer ile kesildi — çıktı güvenilmez: static-gates gate hatası');
-    return parseTscOutput(stdout);
+    const findings = parseTscOutput(stdout);
+    // I8: nonzero exit + ayrıştırılabilir bulgu yok → sessiz pass riski — fail-closed (stderr tanı ile)
+    if (evaluateStaticTool(stdout, exitedCleanly, findings) === 'throw') {
+      throw new Error(`tsc nonzero exit ama ayrıştırılabilir bulgu yok — çıktı güvenilmez, fail-closed: static-gates gate hatası${stderr ? ` — stderr: ${stderr.slice(0, 300)}` : ''}`);
+    }
+    return findings;
   }
 
   async runTests(repoPath: string): Promise<TestRunResult> {

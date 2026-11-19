@@ -2,6 +2,13 @@ import { mkdirSync, writeFileSync, realpathSync, lstatSync, existsSync } from 'n
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { Artifact } from '../contracts/schemas.js';
 
+/**
+ * I3 (final review): agent'ın dokunamayacağı politika/kanıt/bağımlılık yüzeyleri — fail-closed.
+ * policy.yaml: gate politikası; .devloop/: devloop kanıt günlüğü + worktree'ler; .gitignore:
+ * repo sahibinin izin yüzeyi; package.json: bağımlılık yüzeyi (araç zinciri güvenliği).
+ */
+const DENIED_EXACT = new Set(['policy.yaml', '.gitignore', 'package.json']);
+
 /** A5: canonicalization + `..` reddi + symlink denetimi. Repo dışına yazma yok. */
 export async function applyArtifact(repoPath: string, artifact: Artifact): Promise<void> {
   const root = realpathSync(resolve(repoPath));
@@ -11,6 +18,9 @@ export async function applyArtifact(repoPath: string, artifact: Artifact): Promi
     const relFromRoot = relative(root, target);
     if (relFromRoot.startsWith('..') || isAbsolute(relFromRoot)) {
       throw new Error(`Yol kaçışı reddedildi: ${file.path}`);
+    }
+    if (DENIED_EXACT.has(rel) || rel.startsWith('.devloop/')) {
+      throw new Error(`Yasaklı yol reddedildi: ${file.path} (politika/kanıt yüzeyleri agent'a kapalıdır)`);
     }
     // A5: yazma öncesi — var olan her ata segmenti kök içinde kalmalı (symlink kaçışı yok)
     let probe = root;
