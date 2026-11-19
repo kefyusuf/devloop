@@ -7,7 +7,8 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ReviewPipeline } from '../../src/pipeline/pipeline.js';
-import type { StageResult } from '../../src/contracts/review.js';
+import type { StageResult, ReviewStage } from '../../src/contracts/review.js';
+import type { LlmGateway } from '../../src/gateway/gateway.js';
 
 const policy = loadConfig(process.cwd()).policy;
 const GOLDEN_DIFF = '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;';
@@ -60,14 +61,18 @@ describe('runEval', () => {
     expect(ev.payload.score).toBe(100);
     expect(validateChain(store.readAll()).ok).toBe(true);
   });
-  it('LLM-siz: eval koşumunda gateway çağrısı YAPILMAZ (deterministik mod)', async () => {
+  it('LLM-siz: eval, pipeline stage\'lerinin gerektirdiği dışında gateway çağrısı EKLEMEZ', async () => {
     const dir = makeRepo([GOLDEN]);
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
-    let gatewayCalls = 0;
-    const spyGateway = { complete: vi.fn(async () => { gatewayCalls++; return { data: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 } }; }) };
-    // passPipeline sahte stage'leri gateway'e hiç erişmez — deterministik modun kanıtı budur
-    await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
-    expect(gatewayCalls).toBe(0);
-    void spyGateway;
+    const spyGateway = { complete: vi.fn(async () => ({ data: { findings: [] }, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 } })) };
+    const primary: ReviewStage = { name: 'llm-reviewer', kind: 'advisory', evaluate: async (ctx) => {
+      await (spyGateway as unknown as LlmGateway).complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: ctx.taskSpec.id });
+      return { status: 'pass', findings: [], durationMs: 1 };
+    } };
+    const gateStage: ReviewStage = { name: 'static-gates', kind: 'gate', evaluate: async () => ({ status: 'pass', findings: [], durationMs: 1 }) };
+    const pipeline = { run: vi.fn(async (ctx) => { await primary.evaluate(ctx); return { verdicts: [], findings: [], gateFailed: null, passed: true }; }) } as unknown as ReviewPipeline;
+    const r = await runEval({ repoPath: dir, pipeline, policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
+    expect(r.score).toBe(100);
+    expect(spyGateway.complete).toHaveBeenCalledTimes(1); // 1 görev × 1 stage çağrısı — runEval fazladan eklemez
   });
 });
