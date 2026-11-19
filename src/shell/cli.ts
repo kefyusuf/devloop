@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { loadConfig, type Policy } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
-import { AnthropicGateway } from '../gateway/gateway.js';
+import { createGateway } from '../gateway/factory.js';
 import { LlmGeneratorBackend } from '../generator/generator.js';
 import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
@@ -63,7 +63,7 @@ export function buildCli(workDir = process.cwd()): Command {
     // I1 (final review): bütçe TEK KAPI — BudgetedGateway CLI'da kurulur ve backend, reviewer
     // stage ve deps.gateway'a AYNI örnek geçilir. Böylece gerçek harcayan her çağrı bütçe sayacına
     // düşer; orchestrator içi ayrı sarmalama/canary çağrısı yoktur (kaldırıldı).
-    const gateway = new BudgetedGateway(new AnthropicGateway(policy), policy.budgetUsd, () => {});
+    const gateway = new BudgetedGateway(createGateway(policy), policy.budgetUsd, () => {});
     const adapter = new TypeScriptAdapter();
     // R2 (T4): advisory zinciri llm-reviewer → llm-ensemble. Primary daima koşar; alt (güvenlik+
     // performans rubriği, fallbackModel override) yalnız primary bulgulu veya risk ≥ eşikte koşar.
@@ -185,7 +185,7 @@ export function buildCli(workDir = process.cwd()): Command {
       const { policy } = loadConfig(repoDir());
       const diffText = opts.diff === '-' ? readFileSync(0, 'utf8') : readFileSync(opts.diff, 'utf8');
       const mem = memory();
-      const gateway = new BudgetedGateway(new AnthropicGateway(policy), policy.budgetUsd, () => {});
+      const gateway = new BudgetedGateway(createGateway(policy), policy.budgetUsd, () => {});
       const adapter = new TypeScriptAdapter();
       // R11 (faz 3 T5): risk-tiered çift pipeline — stage örnekleri paylaşımlı kurulur; runReviewDiff
       // triaj skoru < ciEnsembleRiskThreshold → gatePipeline, değilse fullPipeline seçer.
@@ -233,11 +233,10 @@ export function buildCli(workDir = process.cwd()): Command {
         new SecretScanStage(), new MutationStage(effPolicy),
       ];
       if (opts.full) {
-        // Not (T3): `gatewayFactory` T6'da gelir — T3'te mevcut CLI assembly deseni kullanılır
-        // (AnthropicGateway doğrudan). Eval yolu bütçe sayacı TUTMAZ: aday değerlendirme shadow,
-        // production eval salt-okunur karşılaştırmadır; BudgetedGateway sarması bilinçli yapılmadı
-        // (T6 factory refactor CLI'a uygulandığında burası da aynı kapıya bağlanır).
-        const gateway = new AnthropicGateway(effPolicy);
+        // T6: gateway createGateway(effPolicy) ile kurulur (provider'a göre Anthropic/OpenAI).
+        // Eval yolu bütçe sayacı TUTMAZ: aday değerlendirme shadow,
+        // production eval salt-okunur karşılaştırmadır; BudgetedGateway sarması bilinçli yapılmadı.
+        const gateway = createGateway(effPolicy);
         const mem = memory();
         stages.push(new LlmEnsembleStage(
           new LlmReviewerStage(gateway, mem),
@@ -285,7 +284,7 @@ export function buildCli(workDir = process.cwd()): Command {
       // GERÇEKTEN girer. Policy = production policy (playbook-only shadow). Eval yolu bütçe sayacı
       // TUTMAZ (eval komutuyla aynı hüküm — shadow, harcayan üretim çağrısı değildir).
       const adapter = new TypeScriptAdapter();
-      const gateway = new AnthropicGateway(policy);
+      const gateway = createGateway(policy);
       const pipeline = new ReviewPipeline([
         new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
         new SecretScanStage(), new MutationStage(policy),

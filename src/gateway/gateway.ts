@@ -1,21 +1,13 @@
-import { z } from 'zod';
+import type { z } from 'zod';
 import type { Policy } from '../config/config.js';
+import { GatewayError, type LlmGateway, type TokenUsage } from './types.js';
+import { extractJson, MAX_JSON_RETRIES } from './extractJson.js';
 
-export interface TokenUsage { inputTokens: number; outputTokens: number; costUsd: number }
-export class GatewayError extends Error {}
-
-export interface LlmGateway {
-  complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; runId: string; model?: string }): Promise<{ data: T; usage: TokenUsage }>;
-}
-
-const MAX_JSON_RETRIES = 2;
-
-function extractJson(text: string): unknown {
-  const m = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
-  const candidate = m ? m[1] : text;
-  const start = Math.min(...['{', '['].map((c) => { const i = candidate.indexOf(c); return i === -1 ? Number.MAX_SAFE_INTEGER : i; }));
-  return JSON.parse(candidate.slice(start === Number.MAX_SAFE_INTEGER ? 0 : start));
-}
+// R12 (faz 3 T6): ortak tipler types.ts'e, extractJson/MAX_JSON_RETRIES extractJson.ts'e taşındı.
+// Re-export geriye dönük uyum sağlar — mevcut importer'lar (generator/orchestrator/stages/tests)
+// gateway.js'ten import etmeye devam eder.
+export { GatewayError } from './types.js';
+export type { LlmGateway, TokenUsage } from './types.js';
 
 export class AnthropicGateway implements LlmGateway {
   private readonly apiKey: string;
