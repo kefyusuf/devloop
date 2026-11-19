@@ -37,11 +37,12 @@ export class BudgetedGateway implements LlmGateway { // A6: bütçe gerçek usag
   private total = 0;
   constructor(private readonly inner: LlmGateway, private readonly budgetUsd: number, private readonly onSpend: (usd: number) => void) {}
   get spent(): number { return this.total; }
-  async complete<T>(req: { system: string; user: string; schema: { parse: (x: unknown) => T }; runId: string }): Promise<{ data: T; usage: TokenUsage }> {
+  async complete<T>(req: { system: string; user: string; schema: { parse: (x: unknown) => T }; runId: string; model?: string }): Promise<{ data: T; usage: TokenUsage }> {
     // Ön-kontrol: bütçe dengesine (>=) başlanan çağrı reddedilir (çağrı ücreti harcanmaz).
     if (this.total >= this.budgetUsd) throw new BudgetExceededError(`Bütçe aşıldı: $${this.total.toFixed(2)} / $${this.budgetUsd}`);
     // Plan notu: sınıfın genel imzası { parse } serbest şekli; inner LlmGateway z.ZodType bekler — sınırda cast.
-    const r = await this.inner.complete(req as { system: string; user: string; schema: z.ZodType<T>; runId: string });
+    // T4: model? ensemble alt reviewer'ın (fallbackModel) override'ı sarmalayıcıdan geçebilsin diye.
+    const r = await this.inner.complete(req as { system: string; user: string; schema: z.ZodType<T>; runId: string; model?: string });
     this.total += r.usage.costUsd;
     this.onSpend(this.total);
     // Gerçek usage toplamı bütçeyi AŞARSA (>) yanıt reddedilir — ücret harcanır

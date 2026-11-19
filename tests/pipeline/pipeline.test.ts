@@ -5,7 +5,8 @@ import type { ReviewStage, ReviewContext } from '../../src/contracts/review.js';
 import type { Finding } from '../../src/contracts/schemas.js';
 
 const base = loadConfig(process.cwd()).policy;
-const policy = { ...base, gates: ['static-gates', 'tests'], advisory: ['llm-reviewer'], authorizedSkips: [] };
+// hüküm: policy-adı güncellemesi — eski 'llm-reviewer' advisory adı T4 ile 'llm-ensemble' oldu; sahte stage adları da aynı adla (A2 fail-closed eşleşmesi).
+const policy = { ...base, gates: ['static-gates', 'tests'], advisory: ['llm-ensemble'], authorizedSkips: [] };
 const ctx: ReviewContext = {
   taskSpec: { id: 't', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
   artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] },
@@ -20,14 +21,14 @@ const F = (id: string, stageName: string, category: string, severity: Finding['s
 describe('ReviewPipeline fail-closed', () => {
   it('gate fail → advisory koşmaz, gateFailed set, passed=false', async () => {
     const calls: string[] = [];
-    const p = new ReviewPipeline([stage('static-gates', 'gate', 'fail', [F('1', 'static-gates', 'lint', 'required')], calls), stage('tests', 'gate', 'pass', [], calls), stage('llm-reviewer', 'advisory', 'pass', [], calls)], policy);
+    const p = new ReviewPipeline([stage('static-gates', 'gate', 'fail', [F('1', 'static-gates', 'lint', 'required')], calls), stage('tests', 'gate', 'pass', [], calls), stage('llm-ensemble', 'advisory', 'pass', [], calls)], policy);
     const r = await p.run(ctx);
     expect(r.gateFailed).toBe('static-gates');
     expect(calls).toEqual(['static-gates']);
     expect(r.passed).toBe(false);
   });
   it('gate ERROR → gateFailed (sessiz pass yok)', async () => {
-    const p = new ReviewPipeline([stage('static-gates', 'gate', 'error'), stage('tests', 'gate', 'pass'), stage('llm-reviewer', 'advisory', 'pass')], policy);
+    const p = new ReviewPipeline([stage('static-gates', 'gate', 'error'), stage('tests', 'gate', 'pass'), stage('llm-ensemble', 'advisory', 'pass')], policy);
     expect((await p.run(ctx)).gateFailed).toBe('static-gates');
   });
   it('stage hata mesajı verdict\'e taşınır (I5 — kanıt zinciri diagnoz edilebilir)', async () => {
@@ -41,7 +42,7 @@ describe('ReviewPipeline fail-closed', () => {
     expect(r.verdicts[0].errorMessage).toBeUndefined();
   });
   it('yetkisiz skip → fail', async () => {
-    const p = new ReviewPipeline([stage('static-gates', 'gate', 'skipped'), stage('tests', 'gate', 'pass'), stage('llm-reviewer', 'advisory', 'pass')], policy);
+    const p = new ReviewPipeline([stage('static-gates', 'gate', 'skipped'), stage('tests', 'gate', 'pass'), stage('llm-ensemble', 'advisory', 'pass')], policy);
     expect((await p.run(ctx)).gateFailed).toBe('static-gates');
   });
   it('yetkili skip (authorizedSkips) → geçer', async () => {
@@ -56,15 +57,15 @@ describe('ReviewPipeline fail-closed', () => {
   it('hepsi geçince advisory koşar; dedupe en şiddetliyi birebir korur', async () => {
     const calls: string[] = [];
     const s1 = stage('static-gates', 'gate', 'pass', [F('1', 'static-gates', 'lint', 'optional')], calls);
-    const s2 = stage('llm-reviewer', 'advisory', 'pass', [F('2', 'llm-reviewer', 'lint', 'critical')], calls);
+    const s2 = stage('llm-ensemble', 'advisory', 'pass', [F('2', 'llm-ensemble', 'lint', 'critical')], calls);
     const r = await new ReviewPipeline([s1, stage('tests', 'gate', 'pass', [], calls), s2], policy).run(ctx); // hüküm: brief listesinde politikadaki 'tests' gate'i eksikti — A2 gereği PipelineConfigError'ydi; "hepsi geçince advisory koşar" niyeti tamamlandı
     expect(r.passed).toBe(true);
     expect(r.findings).toHaveLength(1);
     expect(r.findings[0].severity).toBe('critical');
-    expect(r.findings[0].stage).toBe('llm-reviewer'); // kazanan bulgu birebir (v1 çelişkisi giderildi)
+    expect(r.findings[0].stage).toBe('llm-ensemble'); // kazanan bulgu birebir (v1 çelişkisi giderildi)
   });
   it('farklı kategori bulgular çelişki sayılıp korunur', async () => {
-    const r = await new ReviewPipeline([stage('static-gates', 'gate', 'pass', [F('1', 'static-gates', 'lint', 'optional')]), stage('tests', 'gate', 'pass'), stage('llm-reviewer', 'advisory', 'pass', [F('2', 'llm-reviewer', 'security', 'required')])], policy).run(ctx);
+    const r = await new ReviewPipeline([stage('static-gates', 'gate', 'pass', [F('1', 'static-gates', 'lint', 'optional')]), stage('tests', 'gate', 'pass'), stage('llm-ensemble', 'advisory', 'pass', [F('2', 'llm-ensemble', 'security', 'required')])], policy).run(ctx);
     expect(r.findings).toHaveLength(2);
   });
 });

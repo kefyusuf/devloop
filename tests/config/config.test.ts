@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 
 const POLICY = `version: 1
 gates: [static-gates, tests]
-advisory: [llm-reviewer]
+advisory: [llm-ensemble]   # hüküm: eski 'llm-reviewer' policy adı T4 ile llm-ensemble oldu (assembly R2)
 authorizedSkips: []
 maxFixTours: 2
 maxIterations: 5

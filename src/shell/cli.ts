@@ -16,6 +16,8 @@ import { TestGateStage } from '../pipeline/stages/testGate.js';
 import { SecretScanStage } from '../pipeline/stages/secretScan.js';
 import { MutationStubStage } from '../pipeline/stages/mutationStub.js';
 import { LlmReviewerStage } from '../pipeline/stages/llmReviewer.js';
+import { LlmReviewerAltStage } from '../pipeline/stages/llmReviewerAlt.js';
+import { LlmEnsembleStage } from '../pipeline/stages/llmEnsemble.js';
 import { TypeScriptAdapter } from '../adapters/typescript/index.js';
 
 export function buildCli(workDir = process.cwd()): Command {
@@ -34,10 +36,18 @@ export function buildCli(workDir = process.cwd()): Command {
     // düşer; orchestrator içi ayrı sarmalama/canary çağrısı yoktur (kaldırıldı).
     const gateway = new BudgetedGateway(new AnthropicGateway(policy), policy.budgetUsd, () => {});
     const adapter = new TypeScriptAdapter();
+    // R2 (T4): advisory zinciri llm-reviewer → llm-ensemble. Primary daima koşar; alt (güvenlik+
+    // performans rubriği, fallbackModel override) yalnız primary bulgulu veya risk ≥ eşikte koşar.
+    // Bu kayıt, policy advisory [llm-ensemble, ...] ile PipelineConfigError penceresini kapatır.
+    const ensemble = new LlmEnsembleStage(
+      new LlmReviewerStage(gateway, mem), // A4: reviewer dersleri buraya
+      new LlmReviewerAltStage(gateway, { model: policy.llm.fallbackModel, reviewerLessons: mem }),
+      policy,
+    );
     const pipeline = new ReviewPipeline([
       new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
       new SecretScanStage(), new MutationStubStage(),
-      new LlmReviewerStage(gateway, mem), // A4: reviewer dersleri buraya
+      ensemble,
     ], policy);
     const orchestrator = new Orchestrator({
       store: s,

@@ -53,7 +53,9 @@ export class AnthropicGateway implements LlmGateway {
       }
     }
     const cause = lastError instanceof Error ? lastError.message : String(lastError);
-    throw new GatewayError(`LLM çağrısı ${MAX_JSON_RETRIES + 1} denemede başarısız (model: ${this.policy.llm.model}). Son neden: ${cause}`);
+    // T4 hüküm: mesaj politikadaki modeli değil, GERÇEKTE koşan primary modeli raporlar —
+    // `primary` = req.model ?? policy.llm.model (override durumunda policy değeri yanıltıcıydı).
+    throw new GatewayError(`LLM çağrısı ${MAX_JSON_RETRIES + 1} denemede başarısız (model: ${primary}). Son neden: ${cause}`);
   }
 
   private usage(u: { input_tokens: number; output_tokens: number }): TokenUsage {
