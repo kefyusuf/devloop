@@ -2,14 +2,18 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { safeEnv } from './safeEnv.js';
 const run = promisify(execFile);
 
 export class PrReporter {
   constructor(private readonly repoPath: string) {}
   async openPr(branch: string, title: string, body: string, taskId: string): Promise<{ url: string | null }> {
     try {
-      await run('git', ['push', '-u', 'origin', branch], { cwd: this.repoPath, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
-      const { stdout } = await run('gh', ['pr', 'create', '--title', title, '--body', body, '--head', branch], { cwd: this.repoPath, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
+      // I2 (final review): git/gh süreçlerine seçilmiş env geçilir — ANTHROPIC_API_KEY vb. sırlar
+      // çocuk sürece sızmaz; git/gh kimlik akışı PATH + GIT_/SSH_ + HOME/UserProfile ayak iziyle yürür.
+      const spawnOpts = { cwd: this.repoPath, env: safeEnv(), timeout: 60_000, maxBuffer: 4 * 1024 * 1024 };
+      await run('git', ['push', '-u', 'origin', branch], spawnOpts);
+      const { stdout } = await run('gh', ['pr', 'create', '--title', title, '--body', body, '--head', branch], spawnOpts);
       return { url: stdout.trim().split('\n').pop() ?? null };
     } catch {
       const dir = join(this.repoPath, '.devloop', 'reports');

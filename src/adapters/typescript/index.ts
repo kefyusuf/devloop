@@ -6,13 +6,14 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { StackAdapter, TestRunResult } from '../types.js';
 import type { Finding } from '../../contracts/schemas.js';
+import { safeEnv } from '../../shell/safeEnv.js';
 import { parseEslintJson, parseTscOutput, parseVitestOutput } from './parsers.js';
 
 const run = promisify(execFile);
 const SPAWN = { timeout: 120_000, maxBuffer: 10 * 1024 * 1024, shell: false } as const; // A5: sabit executable, shell yok
 
 /** Reddedilen execFile hatasının sınıflandırma için gereken yüzü. */
-type Rejection = { killed?: boolean; signal?: unknown; code?: unknown; stdout?: string };
+type Rejection = { killed?: boolean; signal?: unknown; code?: unknown; stdout?: string; stderr?: string };
 
 /**
  * A6: başarısız komut hiçbir zaman sessizce pass olmaz.
@@ -27,7 +28,7 @@ export function classifyRejection(e: Rejection): 'fatal' | 'nonzero' {
   return 'nonzero';
 }
 
-interface ToolOutput { stdout: string; exitedCleanly: boolean; killed: boolean; truncated: boolean }
+interface ToolOutput { stdout: string; stderr: string; exitedCleanly: boolean; killed: boolean; truncated: boolean }
 
 /**
  * Araç koşumu üç yolla sonuçlanır:
@@ -37,16 +38,18 @@ interface ToolOutput { stdout: string; exitedCleanly: boolean; killed: boolean; 
  * - fatal ve stdout yok (spawn sınıfı hata) → burada THROW edilir → stage catch → 'error'
  */
 async function runTool(repoPath: string, bin: string, args: string[]): Promise<ToolOutput> {
+  // I2 (final review): sırlar (API anahtarları vb.) çocuk sürece sızmaz — env seçilmiş ayak izi.
   try {
-    const r = await run(process.execPath, [bin, ...args], { cwd: repoPath, ...SPAWN });
-    return { stdout: r.stdout, exitedCleanly: true, killed: false, truncated: false };
+    const r = await run(process.execPath, [bin, ...args], { cwd: repoPath, env: safeEnv(), ...SPAWN });
+    return { stdout: r.stdout, stderr: r.stderr ?? '', exitedCleanly: true, killed: false, truncated: false };
   } catch (e) {
     const err = e as Rejection;
     if (classifyRejection(err) === 'fatal' && !err.stdout) {
-      throw new Error(`araç koşumu fatal (stdout yok): ${String(err.code ?? err.signal ?? 'bilinmeyen hata')}`);
+      const stderr = err.stderr ? ` — stderr: ${err.stderr.slice(0, 300)}` : '';
+      throw new Error(`araç koşumu fatal (stdout yok): ${String(err.code ?? err.signal ?? 'bilinmeyen hata')}${stderr}`);
     }
     // nonzero exit → parse edilebilir çıktı; fatal ama çıktı var (timeout kill / ENOBUFS) → bayrakla dön
-    return { stdout: err.stdout ?? '', exitedCleanly: false, killed: err.killed === true || !!err.signal, truncated: err.code === 'ENOBUFS' };
+    return { stdout: err.stdout ?? '', stderr: err.stderr ?? '', exitedCleanly: false, killed: err.killed === true || !!err.signal, truncated: err.code === 'ENOBUFS' };
   }
 }
 

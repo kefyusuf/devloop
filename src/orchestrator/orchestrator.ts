@@ -14,9 +14,13 @@ import type { Policy } from '../config/config.js';
 import type { ReviewContext } from '../contracts/review.js';
 import { TaskSpecSchema, type TaskSpec, type Artifact, type Finding } from '../contracts/schemas.js';
 import type { PrReporter } from '../shell/pr.js';
+import { safeEnv } from '../shell/safeEnv.js';
 import type { z } from 'zod';
 
 const runGit = promisify(execFile);
+// I2 (final review): tüm git çocuk süreçleri seçilmiş env ile koşar — sırlar (API anahtarları)
+// worktree/git süreçlerine sızmaz. GIT_/SSH_ + PATH gibi ayak izi safeEnv'de.
+const git = (args: string[], cwd: string) => runGit('git', args, { cwd, env: safeEnv() });
 
 export interface OrchestratorDeps {
   store: VerdictStore; backend: GeneratorBackend; pipeline: ReviewPipeline;
@@ -48,9 +52,19 @@ export class BudgetedGateway implements LlmGateway { // A6: bütçe gerçek usag
 
 export class Orchestrator {
   // Hüküm (fix round 1): bütçe per-run; resume yeni bütçe alır — A6 'gerçek usage' değişmezi
-  // koşum bazında işler (açık insan yeniden-koşumu yeni bütçeye rıza gösterir). README'ye taşınacak (T15).
-  private spendUsd = 0;
+  // koşum bazında işler (açık insan yeniden-koşumu yeni bütçeye rıza gösterir).
   constructor(private readonly deps: OrchestratorDeps) {}
+
+  /**
+   * I1 (final review): bütçe TEK KAPI — BudgetedGateway CLI'da kurulur ve backend/reviewer/
+   * deps.gateway'a AYNI örnek geçilir (canary çağrısı kaldırıldı). Orchestrator harcamayı yalnız
+   * gözlemler: gerçek harcayan (LlmGeneratorBackend/LlmReviewerStage) BudgetedGateway örneğini
+   * kullanır; spend onun `spent`'inden okunur. BudgetedGateway değilse (test fake'leri) 0.
+   */
+  private currentSpend(): number {
+    const gw = this.deps.gateway;
+    return gw instanceof BudgetedGateway ? gw.spent : 0;
+  }
 
   async run(tasksFile: string): Promise<RunSummary> {
     const { store, policy, repoPath } = this.deps;
@@ -76,7 +90,6 @@ export class Orchestrator {
     // .git/info/exclude'una yazılır (kullanıcının .gitignore'una dokunulmaz); koşum başına bir kez.
     this.ensureDevloopExcluded(repoPath);
 
-    const budgeted = new BudgetedGateway(this.deps.gateway, policy.budgetUsd, (usd) => { this.spendUsd = usd; });
     const done = new Set([...store.query({ type: 'PRCreated' }), ...store.query({ type: 'TaskBlocked' })].map((e) => e.task_id));
     const tasks = (JSON.parse(readFileSync(tasksFile, 'utf8')) as unknown[]).map((t) => TaskSpecSchema.parse(t));
     const abort = async (reason: 'budget' | 'wallclock' | 'kill', taskId: string) => {
@@ -89,7 +102,8 @@ export class Orchestrator {
       if (summary.aborted) break;
       // Fix round 1: görev-topu guardı > — tam bütçeye eşitleme (==) geçen görevi TAMAMLAR;
       // sonraki görev, gateway pre-call reject (total >= budget) ile RunAborted(budget) alır (run-level).
-      if (this.spendUsd > policy.budgetUsd) { await abort('budget', task.id); break; }
+      // I1: spend, CLI'nın kurduğu BudgetedGateway örneğinden okunur (canary çağrısı yok).
+      if (this.currentSpend() > policy.budgetUsd) { await abort('budget', task.id); break; }
       if (existsSync(join(repoPath, '.devloop', 'STOP'))) { await abort('kill', task.id); break; }
       if ((Date.now() - startedAt) / 60000 > policy.wallClockMinutes) { await abort('wallclock', task.id); break; }
 
@@ -100,9 +114,9 @@ export class Orchestrator {
       try {
         // Fix round 1 (Important): çöken/abort olan önceki koşumun bıraktığı stale branch worktree
         // add'i ölümcül kılar (tam resume vakası) — varsa sil, worktree add taze branch açar.
-        await runGit('git', ['branch', '-D', `devloop/${task.id}`], { cwd: repoPath }).catch(() => undefined);
-        await runGit('git', ['worktree', 'add', wt, '-b', `devloop/${task.id}`], { cwd: repoPath });
-        await this.executeTask(task, wt, runId, budgeted, summary);
+        await git(['branch', '-D', `devloop/${task.id}`], repoPath).catch(() => undefined);
+        await git(['worktree', 'add', wt, '-b', `devloop/${task.id}`], repoPath);
+        await this.executeTask(task, wt, runId, summary);
       } catch (e) {
         if (e instanceof BudgetExceededError) {
           // bütçe → run-level semantik korunur (kill/wallclock döngü-topunda zaten run-level).
@@ -116,7 +130,7 @@ export class Orchestrator {
         }
       } finally {
         try { rmSync(wt, { recursive: true, force: true }); } catch { /* Windows EBUSY — prune aşağıda */ }
-        await runGit('git', ['worktree', 'prune'], { cwd: repoPath }).catch(() => undefined);
+        await git(['worktree', 'prune'], repoPath).catch(() => undefined);
       }
     }
     return summary;
@@ -142,7 +156,7 @@ export class Orchestrator {
   }
 
   /** Gate enforcement gövdesi (A2): her tur pipeline → fail ise feedback → sonraki tur. Tükenirse TaskBlocked, PR yok. */
-  private async executeTask(task: TaskSpec, wt: string, runId: string, gateway: BudgetedGateway, summary: RunSummary): Promise<void> {
+  private async executeTask(task: TaskSpec, wt: string, runId: string, summary: RunSummary): Promise<void> {
     const { store, policy } = this.deps;
     const taskEventId = store.query({ runId, taskId: task.id, type: 'TaskPicked' }).pop()!.event_id;
     let feedback: Finding[] = [];
@@ -153,19 +167,10 @@ export class Orchestrator {
     for (let tour = 1; tour <= policy.maxFixTours; tour++) {
       let artifact: Artifact;
       try {
-        // A6: turun gerçek gateway kullanımı BudgetedGateway üzerinden toplanır (onSpend → spendUsd).
-        // Ruling (plan hatası): brief'in verbatim bütçe testi fake backend kullanır ve backend gateway
-        // çağırmaz; spendUsd yalnız BudgetedGateway.complete ile accrete olabildiğinden orchestrator
-        // düzeyi tur çağrısı olmadan bütçe abortu hiç tetiklenmez. deps.gateway + executeTask'e geçen
-        // `budgeted` referansının tasarımdaki yeri burasıdır (detay: task-12-report.md).
-        await gateway.complete({
-          system: 'Devloop orkestratörü: tur üretim isteği (bütçe gerçek gateway kullanımı üzerinden sayılır).',
-          user: `GÖREV ${task.id} (tur ${tour}/${policy.maxFixTours}): ${task.description}\nKriterler:\n${task.acceptanceCriteria.map((a) => `- ${a}`).join('\n')}`,
-          schema: { parse: (x: unknown) => x },
-          runId: task.id,
-        });
         // C1: generator gerçek repo bağlamını görür — orchestrator düzeyinde doldurulur
         // (backend kendi kendine doldurmaz; orchestrator sahibi). Boş repoTree/repoFiles üretim hatasıydı.
+        // I1: bütçe canary çağrısı YOK — backend'in gateway kullanımı CLI'nın kurduğu tek
+        // BudgetedGateway üzerinden accrete olur; orchestrator yalnız gözlemler.
         const repoCtx = readRepoContext(wt, task.filesScope);
         const base = await this.deps.backend.generate(task, {
           repoPath: wt, repoTree: repoCtx.repoTree, repoFiles: repoCtx.repoFiles, lessons: '', feedback,
@@ -179,20 +184,18 @@ export class Orchestrator {
         }
         throw e;
       }
-      this.spendUsd = gateway.spent;
-      // Hüküm (pre-flight): plandaki boş bütçe kontrol bloğu gerçek kontrolle değiştirildi —
-      // generate sonrası bütçe aşımı ANINDA RunAborted(budget) + return.
+      // Hüküm (pre-flight): generate sonrası bütçe aşımı ANINDA RunAborted(budget) + return.
       // Fix round 1: tam bütçeye eşitleme (==) geçen turu tamamlar; aşım (>) abort
       // (BudgetedGateway post-call throw ile aynı eşik; > burada savunma katmanıdır).
-      if (this.spendUsd > policy.budgetUsd) {
+      if (this.currentSpend() > policy.budgetUsd) {
         await store.append('RunAborted', runId, task.id, 'orchestrator', { reason: 'budget' });
         summary.aborted = 'budget';
         return;
       }
 
       await applyArtifact(wt, artifact);
-      await runGit('git', ['add', '-A'], { cwd: wt }); // untracked dahil (inceleme D)
-      const diff = (await runGit('git', ['diff', '--cached', '--unified=0'], { cwd: wt })).stdout;
+      await git(['add', '-A'], wt); // untracked dahil (inceleme D)
+      const diff = (await git(['diff', '--cached', '--unified=0'], wt)).stdout;
       artifact = { ...artifact, diff };
       if (diff.trim() === '') {
         // Minor (fix round 1): sıfır-diff artifact commit'te crash eder ('nothing to commit') —
@@ -220,8 +223,9 @@ export class Orchestrator {
       }
       if (lastResult.passed) break;
       feedback = lastResult.findings;
-      // Minor (fix round 1): ölü tur-sonu bütçe kontrolü kaldırıldı — post-generate kontrolü ile
-      // tur sonu arasında spend değişmez (gateway çağrısı yalnız bir sonraki turun başında).
+      // Minor (fix round 1): tur-sonu bütçe kontrolü yok — I1 ile gateway çağrısı yalnız backend'in
+      // generate'ının içinden geçer; sonraki turun başındaki generate bunu aşarsa BudgetedGateway
+      // post-call throw → RunAborted(budget).
     }
 
     if (!lastResult || !lastResult.passed || !finalArtifact || !artEventId) {
@@ -234,8 +238,8 @@ export class Orchestrator {
       return; // A2: gate fail → commit/PR YOK
     }
 
-    await runGit('git', ['commit', '-m', `${task.id}: ${finalArtifact.intent}`], { cwd: wt });
-    const commitSha = ((await runGit('git', ['rev-parse', 'HEAD'], { cwd: wt })).stdout || '').trim() || null;
+    await git(['commit', '-m', `${task.id}: ${finalArtifact.intent}`], wt);
+    const commitSha = ((await git(['rev-parse', 'HEAD'], wt)).stdout || '').trim() || null;
     const diffDigest = createHash('sha256').update(finalArtifact.diff).digest('hex');
     const pr = await this.deps.pr.openPr(`devloop/${task.id}`, `${task.id}: ${finalArtifact.intent}`,
       `${finalArtifact.intent}\n\ncommit: ${commitSha ?? '-'}\ndiffDigest: ${diffDigest}\n\n## Review bulguları (advisory — karar insanın)\n${

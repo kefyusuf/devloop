@@ -26,6 +26,15 @@ const tasksFile = (dir: string, tasks: unknown[]) => { const f = join(dir, 'task
 
 const ART: Artifact = { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'src/a.ts', content: 'export const a=1;' }] };
 const fakeBackend = (art: Artifact = ART) => ({ id: 'fake', generate: vi.fn(async () => art) });
+// hüküm (final review I1): canary kaldırıldı — gerçek harcayan (LlmGeneratorBackend) generate
+// içinde gateway'i çağırır; bütçe testi fake backend'i de AYNI davranışa bindirir.
+const gatewayCallingBackend = (gw: LlmGateway, art: Artifact = ART) => ({
+  id: 'fake',
+  generate: vi.fn(async () => {
+    await gw.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' });
+    return art;
+  }),
+});
 const passPipeline = () => new ReviewPipeline([{ name: 'static-gates', kind: 'gate' as const, evaluate: async (): Promise<StageResult> => ({ status: 'pass', findings: [], durationMs: 1 }) }], policy);
 const failPipeline = (finding: Finding) => new ReviewPipeline([{ name: 'static-gates', kind: 'gate' as const, evaluate: async (): Promise<StageResult> => ({ status: 'fail', findings: [finding], durationMs: 1 }) }], policy);
 
@@ -85,7 +94,10 @@ describe('Orchestrator', () => {
   it('bütçe: gerçek usage toplamı aşılınca RunAborted(budget), kalan görev PR almaz', async () => {
     const repo = initRepo();
     const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
-    const summary = await new Orchestrator(deps(repo, store, { gateway: costGateway(1.5) })).run(tasksFile(repo, [
+    // hüküm (final review I1): bütçe tek kapı — deps.gateway GERÇEK BudgetedGateway; backend
+    // generate başına gateway'i bir kez çağırır (gerçek LlmGeneratorBackend'i yansıtır).
+    const gw = new BudgetedGateway(costGateway(1.5), policy.budgetUsd, () => {});
+    const summary = await new Orchestrator(deps(repo, store, { gateway: gw, backend: gatewayCallingBackend(gw) })).run(tasksFile(repo, [
       { id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
       { id: 't2', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
     ]));

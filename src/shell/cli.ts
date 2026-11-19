@@ -7,7 +7,7 @@ import { AnthropicGateway } from '../gateway/gateway.js';
 import { LlmGeneratorBackend } from '../generator/generator.js';
 import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate } from '../learning/learn.js';
-import { Orchestrator } from '../orchestrator/orchestrator.js';
+import { Orchestrator, BudgetedGateway } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
 import { ReviewPipeline } from '../pipeline/pipeline.js';
 import { RiskTriageStage } from '../pipeline/stages/riskTriage.js';
@@ -29,7 +29,10 @@ export function buildCli(workDir = process.cwd()): Command {
     const { policy } = loadConfig(repoDir());
     const s = store();
     const mem = memory();
-    const gateway = new AnthropicGateway(policy);
+    // I1 (final review): bütçe TEK KAPI — BudgetedGateway CLI'da kurulur ve backend, reviewer
+    // stage ve deps.gateway'a AYNI örnek geçilir. Böylece gerçek harcayan her çağrı bütçe sayacına
+    // düşer; orchestrator içi ayrı sarmalama/canary çağrısı yoktur (kaldırıldı).
+    const gateway = new BudgetedGateway(new AnthropicGateway(policy), policy.budgetUsd, () => {});
     const adapter = new TypeScriptAdapter();
     const pipeline = new ReviewPipeline([
       new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
