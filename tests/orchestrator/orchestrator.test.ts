@@ -78,6 +78,11 @@ describe('Orchestrator', () => {
     expect(pr.diffDigest).toBe(createHash('sha256').update(recorded.diff).digest('hex'));
     expect(validateChain(store.readAll()).ok).toBe(true);
     expect(backend.generate).toHaveBeenCalledTimes(1);
+    // R4a fix round 1: entegrasyon pin'i — gerçek koşumda RunStarted kanıtına gateConfigHash
+    // yazılır (computeGateConfigHash yalnız birim testte kalsaydı append alanı kaybedebilirdi).
+    // Fixture repo'da gate config'leri yok → hex ön-ek + absent marker'lar; ön-ek her iki formda pin.
+    const started = store.query({ type: 'RunStarted' })[0];
+    expect(String(started.payload.configSnapshot.gateConfigHash)).toMatch(/^[0-9a-f]{16}/);
   });
 
   it('gate fail: maxFixTours tur, sonra TaskBlocked + PR YOK (A2)', async () => {
