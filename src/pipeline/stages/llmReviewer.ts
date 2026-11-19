@@ -45,6 +45,7 @@ export class LlmReviewerStage implements ReviewStage {
       const findings: Finding[] = data.findings.map((r) => ({
         id: randomUUID(), stage: this.name, category: r.category, severity: r.severity,
         confidence: r.confidence, evidence: { file: r.file, line: r.line }, suggestion: r.suggestion,
+        corroborated: false,
       }));
       return { status: 'pass', findings, durationMs: Date.now() - t0 }; // advisory: asla fail değil
     } catch (e) {

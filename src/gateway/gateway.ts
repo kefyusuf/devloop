@@ -5,7 +5,7 @@ export interface TokenUsage { inputTokens: number; outputTokens: number; costUsd
 export class GatewayError extends Error {}
 
 export interface LlmGateway {
-  complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; runId: string }): Promise<{ data: T; usage: TokenUsage }>;
+  complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; runId: string; model?: string }): Promise<{ data: T; usage: TokenUsage }>;
 }
 
 const MAX_JSON_RETRIES = 2;
@@ -23,10 +23,11 @@ export class AnthropicGateway implements LlmGateway {
     this.apiKey = process.env[policy.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'LLM_API_KEY'] ?? '';
   }
 
-  async complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; runId: string }): Promise<{ data: T; usage: TokenUsage }> {
+  async complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; runId: string; model?: string }): Promise<{ data: T; usage: TokenUsage }> {
     if (!this.apiKey) throw new GatewayError('API anahtarı yok (env). Spec §7.1: anahtarlar yalnız ortam değişkeninden.');
     let lastError: unknown = null;
-    for (const model of [this.policy.llm.model, this.policy.llm.fallbackModel]) {
+    const primary = req.model ?? this.policy.llm.model;
+    for (const model of [...new Set([primary, this.policy.llm.fallbackModel])]) {
       for (let attempt = 0; attempt <= MAX_JSON_RETRIES; attempt++) {
         let body: { content: Array<{ type: string; text: string }>; usage: { input_tokens: number; output_tokens: number } } | null = null;
         try {

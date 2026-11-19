@@ -41,4 +41,11 @@ describe('AnthropicGateway', () => {
     const g = new AnthropicGateway(policy, fetchMock as typeof fetch);
     expect((await g.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).data.answer).toBe('ok');
   });
+  it('model override: override primary olur, fallback fallback kalır', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(api('{"answer":"ok"}'));
+    const g = new AnthropicGateway(policy, fetchMock as typeof fetch);
+    await g.complete({ system: 's', user: 'q', schema: Schema, runId: 'r', model: 'ozel-model' });
+    const sent = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body);
+    expect(sent.model).toBe('ozel-model');
+  });
 });

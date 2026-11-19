@@ -25,6 +25,11 @@ const P = {
     parentDecisionEventIds: z.array(z.string()), parentLessonEventId: z.string().optional(),
   }),
   EvalRun: z.object({ score: z.number(), comparison: z.record(z.unknown()) }),
+  ProposalCreated: z.object({
+    proposalId: z.string(), kind: z.enum(['lint-rule', 'regression-test', 'policy-tweak']),
+    category: z.string(), title: z.string(), content: z.record(z.unknown()),
+    parentDecisionEventIds: z.array(z.string()),
+  }),
   RunAborted: z.object({ reason: z.enum(['budget', 'kill', 'panic', 'wallclock']) }),
 } as const;
 
@@ -37,7 +42,8 @@ function branch<K extends EventType>(type: K) {
 export const DevloopEventSchema = z.union([
   branch('RunStarted'), branch('TaskPicked'), branch('ArtifactProduced'), branch('RiskScored'),
   branch('FindingEmitted'), branch('StageVerdict'), branch('HumanDecision'), branch('PRCreated'),
-  branch('TaskBlocked'), branch('LessonLearned'), branch('EvalRun'), branch('RunAborted'),
+  branch('TaskBlocked'), branch('LessonLearned'), branch('EvalRun'), branch('ProposalCreated'),
+  branch('RunAborted'),
 ]);
 export type DevloopEvent = z.infer<typeof DevloopEventSchema>;
 

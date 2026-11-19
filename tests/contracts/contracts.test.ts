@@ -51,3 +51,17 @@ describe('event union (tip güvenli payload)', () => {
     expect(ev.idempotencyKey).toBe('key-1');
   });
 });
+
+describe('faz 2 kontratları', () => {
+  it('Finding.corroborated default false', () => {
+    const f = FindingSchema.parse({ id: 'f', stage: 's', category: 'c', severity: 'nit', confidence: 1, evidence: { file: 'a' } });
+    expect(f.corroborated).toBe(false);
+  });
+  it('ProposalCreated event doğrulanır; kind enum dışı reddedilir', () => {
+    const env = makeEnvelope('r', 't', 'o');
+    const ok = DevloopEventSchema.safeParse({ ...env, type: 'ProposalCreated', payload: { proposalId: 'p1', kind: 'lint-rule', category: 'lint', title: 't', content: { rule: 'x' }, parentDecisionEventIds: [] } });
+    const bad = DevloopEventSchema.safeParse({ ...env, type: 'ProposalCreated', payload: { proposalId: 'p1', kind: 'sihirli', category: 'lint', title: 't', content: {}, parentDecisionEventIds: [] } });
+    expect(ok.success).toBe(true);
+    expect(bad.success).toBe(false);
+  });
+});

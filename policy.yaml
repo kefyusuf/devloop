@@ -1,11 +1,15 @@
 version: 1
 gates: [risk-triage, static-gates, tests, secret-scan]
-advisory: [llm-reviewer, mutation-testing]
+advisory: [llm-ensemble, mutation-testing]
 authorizedSkips: [mutation-testing]   # A2: yalnız burada listelenen gate skip olabilir
 maxFixTours: 3
 maxIterations: 10
 budgetUsd: 2.0
 wallClockMinutes: 30
+ensembleRiskThreshold: 40
+mutationScoreThreshold: 60
+mutationTimeoutMinutes: 15
+l2MinDecisions: 100
 risk:
   weights: { diffSize: 0.3, testDiff: 0.5, scopePaths: 0.2 }
 llm:
@@ -13,5 +17,6 @@ llm:
   model: claude-sonnet-4-5
   fallbackModel: claude-haiku-3-5
   maxTokens: 8192
+  backoffMs: 500
   costPer1kInput: 0.003
   costPer1kOutput: 0.015

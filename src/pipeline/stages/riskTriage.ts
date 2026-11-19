@@ -29,6 +29,7 @@ export class RiskTriageStage implements ReviewStage {
       id: randomUUID(), stage: this.name, category: 'test-diff', severity: 'required', confidence: 1,
       evidence: { file: ctx.artifact.files.find((f) => TEST_FILE_RE.test(f.path))!.path },
       suggestion: 'Test değişiklikleri önce review edilmeli; assert değişimleri kırık davranışı gizleyebilir.',
+      corroborated: false,
     }] : [];
     return { status: 'pass', findings, durationMs: Date.now() - t0 };
   }

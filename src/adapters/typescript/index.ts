@@ -96,7 +96,7 @@ export function evaluateTestResult(summary: string, fullOutput: string, exitedCl
     parsed.passed = false;
     parsed.findings.unshift({ id: randomUUID(), stage: 'tests', category: 'tests', severity: 'critical',
       confidence: 1, evidence: { file: '(test-output)' },
-      suggestion: 'test runner exit kodu sıfır değil ama özet geçiş bildiriyor — fail-closed' });
+      suggestion: 'test runner exit kodu sıfır değil ama özet geçiş bildiriyor — fail-closed', corroborated: false });
   }
   return parsed;
 }

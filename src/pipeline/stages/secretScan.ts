@@ -22,7 +22,7 @@ export class SecretScanStage implements ReviewStage {
         for (const file of targets) {
           const m = re.exec(file.content);
           if (m) findings.push({ id: randomUUID(), stage: this.name, category: 'secret', severity: 'critical',
-            confidence: 0.9, evidence: { file: file.path }, suggestion: `Olası sırr kalıbı (${name}); değeri vault/ortam değişkenine taşı.` });
+            confidence: 0.9, evidence: { file: file.path }, suggestion: `Olası sırr kalıbı (${name}); değeri vault/ortam değişkenine taşı.`, corroborated: false });
         }
       }
       return { status: findings.length === 0 ? 'pass' : 'fail', findings, durationMs: Date.now() - t0 };

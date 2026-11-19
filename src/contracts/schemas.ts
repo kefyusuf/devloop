@@ -8,6 +8,7 @@ export const FindingSchema = z.object({
   confidence: z.number().min(0).max(1),
   evidence: z.object({ file: z.string(), line: z.number().int().optional() }),
   suggestion: z.string().optional(),
+  corroborated: z.boolean().default(false),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 

@@ -43,3 +43,15 @@ describe('loadConfig', () => {
     expect(policy.authorizedSkips).toEqual(['mutation-testing']);
   });
 });
+
+describe('faz 2 policy alanları', () => {
+  it('varsayılanlar: ensembleRiskThreshold=40, mutationScoreThreshold=60, mutationTimeoutMinutes=15, backoffMs=500, l2MinDecisions=100', () => {
+    const { policy } = loadConfig(join(tmpdir(), `devloop-p2-${Date.now()}`));
+    expect(policy.ensembleRiskThreshold).toBe(40);
+    expect(policy.mutationScoreThreshold).toBe(60);
+    expect(policy.mutationTimeoutMinutes).toBe(15);
+    expect(policy.llm.backoffMs).toBe(500);
+    expect(policy.l2MinDecisions).toBe(100);
+    expect(policy.advisory).toEqual(['llm-ensemble', 'mutation-testing']);
+  });
+});
