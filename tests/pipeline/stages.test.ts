@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { StaticGatesStage } from '../../src/pipeline/stages/staticGates.js';
 import { TestGateStage } from '../../src/pipeline/stages/testGate.js';
 import { SecretScanStage } from '../../src/pipeline/stages/secretScan.js';
-import { MutationStubStage } from '../../src/pipeline/stages/mutationStub.js';
 import { TypeScriptAdapter, resolveBin, classifyRejection, evaluateTestResult, evaluateStaticTool } from '../../src/adapters/typescript/index.js';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import type { StackAdapter } from '../../src/adapters/types.js';
 import type { ReviewContext } from '../../src/contracts/review.js';
 
@@ -52,8 +52,18 @@ describe('deterministik stage\'ler', () => {
     const r = await new SecretScanStage().evaluate(ctx('api_key = "abcdef1234567890abcdef12"', [{ path: 'src/k.ts', content: 'x' }]));
     expect(r.status).toBe('fail');
   });
-  it('mutation stub: skipped', async () => {
-    expect((await new MutationStubStage().evaluate(ctx())).status).toBe('skipped');
+});
+
+describe('resolveBin (R3 eki: kapsam altı package-root fallback)', () => {
+  const worktreeRoot = fileURLToPath(new URL('../../', import.meta.url)); // devloop node_modules'u burada
+  it('skoplu paket: @stryker-mutator/core bin alt yolu kök çözümlemesiyle bulunur', () => {
+    const found = resolveBin(worktreeRoot, '@stryker-mutator/core/bin/stryker.js');
+    expect(found).not.toBeNull();
+    expect(found).toContain(join('@stryker-mutator', 'core', 'bin', 'stryker.js'));
+    expect(found!.toLowerCase().endsWith('stryker.js')).toBe(true);
+  });
+  it('skoplu paket: exports haritası dışı ama diskte olmayan alt yol → null', () => {
+    expect(resolveBin(worktreeRoot, '@stryker-mutator/core/bin/olmayan-dosya.js')).toBeNull();
   });
 });
 

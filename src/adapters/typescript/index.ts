@@ -37,10 +37,10 @@ interface ToolOutput { stdout: string; stderr: string; exitedCleanly: boolean; k
  * - fatal (timeout kill / ENOBUFS, stdout var) → bayraklı döner; ÇAĞIRAN throw eder → stage 'error'
  * - fatal ve stdout yok (spawn sınıfı hata) → burada THROW edilir → stage catch → 'error'
  */
-async function runTool(repoPath: string, bin: string, args: string[]): Promise<ToolOutput> {
+export async function runTool(repoPath: string, bin: string, args: string[], timeoutMs: number = SPAWN.timeout): Promise<ToolOutput> {
   // I2 (final review): sırlar (API anahtarları vb.) çocuk sürece sızmaz — env seçilmiş ayak izi.
   try {
-    const r = await run(process.execPath, [bin, ...args], { cwd: repoPath, env: safeEnv(), ...SPAWN });
+    const r = await run(process.execPath, [bin, ...args], { cwd: repoPath, env: safeEnv(), ...SPAWN, timeout: timeoutMs });
     return { stdout: r.stdout, stderr: r.stderr ?? '', exitedCleanly: true, killed: false, truncated: false };
   } catch (e) {
     const err = e as Rejection;
@@ -73,12 +73,18 @@ export function resolveBin(repoPath: string, subpath: string): string | null {
  * A2 (C2) eki: eslint 9/10 `exports` haritası `./bin/eslint.js` alt yolunu export ETMEZ —
  * doğrudan require.resolve ERR_PACKAGE_PATH_NOT_EXPORTED fırlatır (dosya diskte vardır).
  * `./package.json` export edildiğinden paket kökü çözülür ve bin alt yolu köke sabitlenir
- * (varlık denetimi existsSync ile — kökten sapma yok). `@scope/...` v1 kapsamı dışıdır.
+ * (varlık denetimi existsSync ile — kökten sapma yok).
+ * R3 eki: `@scope/paket/alt/yol` da desteklenir — paket adı kapsam alırken ilk İKİ segmenttir
+ * (ör. `@stryker-mutator/core/bin/stryker.js`: exports haritası bin alt yolunu export etmez,
+ * kökten `bin/stryker.js` dosyası existsSync ile doğrulanır).
  */
 function trySubpath(req: NodeRequire, subpath: string): string | null {
   try { return req.resolve(subpath); } catch { /* exports kısıtı ya da paket yok — kök çözümünü dene */ }
-  const [pkg, ...rest] = subpath.split('/');
-  if (rest.length === 0 || pkg.startsWith('@')) return null;
+  const parts = subpath.split('/');
+  const scoped = parts[0].startsWith('@');
+  if (scoped && parts.length < 3) return null;
+  const [pkg, ...rest] = scoped ? [parts.slice(0, 2).join('/'), ...parts.slice(2)] : parts;
+  if (rest.length === 0) return null;
   try {
     const pkgRoot = dirname(req.resolve(join(pkg, 'package.json')));
     const candidate = join(pkgRoot, ...rest);

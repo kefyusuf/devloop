@@ -14,7 +14,7 @@ import { RiskTriageStage } from '../pipeline/stages/riskTriage.js';
 import { StaticGatesStage } from '../pipeline/stages/staticGates.js';
 import { TestGateStage } from '../pipeline/stages/testGate.js';
 import { SecretScanStage } from '../pipeline/stages/secretScan.js';
-import { MutationStubStage } from '../pipeline/stages/mutationStub.js';
+import { MutationStage } from '../pipeline/stages/mutationStage.js';
 import { LlmReviewerStage } from '../pipeline/stages/llmReviewer.js';
 import { LlmReviewerAltStage } from '../pipeline/stages/llmReviewerAlt.js';
 import { LlmEnsembleStage } from '../pipeline/stages/llmEnsemble.js';
@@ -46,7 +46,7 @@ export function buildCli(workDir = process.cwd()): Command {
     );
     const pipeline = new ReviewPipeline([
       new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-      new SecretScanStage(), new MutationStubStage(),
+      new SecretScanStage(), new MutationStage(policy),
       ensemble,
     ], policy);
     const orchestrator = new Orchestrator({

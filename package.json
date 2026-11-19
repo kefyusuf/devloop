@@ -16,6 +16,8 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^8.7.1",
+    "@stryker-mutator/vitest-runner": "^8.7.1",
     "@types/node": "^20.14.0",
     "eslint": "^10.15.0",
     "tsx": "^4.16.0",
