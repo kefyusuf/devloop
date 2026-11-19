@@ -12,20 +12,71 @@ import { computeGateConfigHash } from '../orchestrator/orchestrator.js';
  * R6 (faz 2 T8): CI trigger mode — review-diff. Unified diff'ten dosya başına EKLENEN satırları
  * çıkarır; CI'da henüz uygulanmamış bir PR diff'i artifact.files olarak pipeline'a verilir.
  *
- * Kenar durumlar:
- * - `+++ /dev/null` (silinen dosya — b/ yolu yok): no-path skip. Regex eşleşmez, mevcut kapsam
- *   korunur; silinen dosyada `+` satırı bulunmadığından önceki dosyaya yanlış atama oluşmaz.
- * - `--- /dev/null` (yeni dosya): yol kaynağı DEĞİLDİR — yol daima `+++ b/<path>` satırından alınır;
- *   a/ olmayan `--- ` satırı mevcut dosya kapsamını kapatır (hunk içeriği bir önceki dosyaya sızmaz).
+ * Kenar durumlar (R14: durum makinesi — bkz. parseDiff gövdesindeki durum dokümantasyonu):
+ * - `+++ /dev/null` (silinen dosya — b/ yolu yok): no-path skip — onay çifti kurulamaz, mevcut
+ *   kapsam korunur; silinen dosyada `+` satırı bulunmadığından önceki dosyaya yanlış atama oluşmaz.
+ * - `--- /dev/null` (yeni dosya): yol kaynağı DEĞİLDİR — yol daima onay satırı `+++ b/<path>`den alınır.
+ * - ESKİ DAVRANIŞ KALDIRILDI: artık `--- ` satırları kapsam KAPATMAZ — kapsam yalnız
+ *   `--- a/` + `+++ b/` onay çiftiyle DEĞİŞİR; hunk içi tırnaklanmış diff gövdesi içeriktir.
  */
 export function parseDiff(diff: string): Array<{ path: string; addedContent: string }> {
   const out = new Map<string, string[]>();
   let current: string | null = null;
-  for (const line of diff.split('\n')) {
-    const h = /^\+\+\+ b\/(.+)$/.exec(line.trim());
-    if (h) { current = h[1]; out.set(current, out.get(current) ?? []); continue; }
-    if (current && line.startsWith('+') && !line.startsWith('+++')) out.get(current)!.push(line.slice(1));
-    if (/^--- /.test(line.trim()) && !line.startsWith('--- a/')) current = null;
+  // R14 (faz 3 T8): durum makinesi — eski satır-döngüsü trim() kullandığı için hunk içindeki
+  // TIRNAKLANMIŞ diff satırlarını başlık sanıyordu: context ` --- a/x.ts` kapsamı KAPATIYOR,
+  // context ` +++ b/x.ts` kapsam ÇALIYOR, eklenen .patch gövdesindeki `++++ b/x.ts` satırı
+  // DÜŞÜYORDU (diff-quoting, ör. PR'ın eklediği .patch dosyası). Kural: dosya başlığı DAİMA
+  // `--- a/<path>` + hemen ardından `+++ b/<path>` ONAY ÇİFTİDİR; çift onaylanmadan kapsam
+  // değişmez. Durumlar:
+  // - EXPECT_FILE_HEADER: başlık bölgesi — `diff --git`/`index`/mode satırları yoksayılır.
+  // - PENDING: `--- a/<path>` (veya `--- /dev/null`) görüldü — `+++ b/<path>` onayı beklenir;
+  //   onay gelmezse satır tırnaklanmış içerik/gürültüdür, kaynak duruma dönülür ve kapsam
+  //   DEĞİŞMEZ (hunk içi `--- a/fake.ts` sonraki `+` satırlarını ilk dosyaya akıtır). Hunk
+  //   içindeki gerçek başlık çifti de yeni dosya açar (gerçek diff'ler hunk sonrası daima
+  //   yeni dosya başlığıyla başlar — sözleşme maddesi bu yolla karşılanır).
+  // - IN_HUNK: `+`-önekli HER satır içeriktir — içeriği `+`, `---`, `+++` ile başlayanlar dahil
+  //   (kodlanmış biçimleri `+…`, `+---…`, `++++…`). `/dev/null` başlıkları (`--- /dev/null`,
+  //   `+++ /dev/null`) yolsuz olduğundan skip edilir (belgeli).
+  type State = 'EXPECT_FILE_HEADER' | 'PENDING' | 'IN_HUNK';
+  let state: State = 'EXPECT_FILE_HEADER';
+  let pendingFrom: State = 'EXPECT_FILE_HEADER'; // onaysız başlıkta dönülecek kaynak durum
+  // Regex'ler trim'siz, satır başına çapalı — trim tabanlı eşleşme yukarıdaki tuzağın ta kendisiydi.
+  const reDel = /^--- (?:a\/(.+)|\/dev\/null)$/; // başlık adayı (yalnız onay çiftiyle kapsam açar)
+  const reAdd = /^\+\+\+ b\/(.+)$/;              // onay satırı
+  const reDevNull = /^\+\+\+ \/dev\/null$/;      // silinen dosya: yol yok
+  const open = (path: string): void => { current = path; out.set(path, out.get(path) ?? []); };
+  for (const raw of diff.split('\n')) {
+    const line = raw.replace(/\r$/, ''); // CRLF toleransı (eski kod trim ile klasifiye ediyordu)
+    if (state === 'PENDING') {
+      const a = reAdd.exec(line);
+      if (a) { open(a[1]); state = 'IN_HUNK'; continue; }        // onay → yeni kapsam
+      if (reDevNull.test(line)) { state = 'IN_HUNK'; continue; } // `+++ /dev/null` — skip (belgeli)
+      if (reDel.test(line)) { state = 'PENDING'; continue; }     // üst üste başlık adayı → yeni onay penceresi
+      // Onay gelmedi → `--- a/` başlık DEĞİL: kaynak durumun kuralıyla BU satırı değerlendir.
+      if (pendingFrom === 'IN_HUNK') {
+        state = 'IN_HUNK';
+        if (current !== null && line.startsWith('+')) out.get(current)?.push(line.slice(1)); // içerik ilk dosyaya akar
+      } else {
+        state = 'EXPECT_FILE_HEADER';
+        const a2 = reAdd.exec(line); // reDel yeniden denenmez — bu satır için onay zaten reddedildi
+        if (a2) { open(a2[1]); state = 'IN_HUNK'; }
+        else if (line.startsWith('@@')) state = 'IN_HUNK'; // tolerans: başlıksız @@ → hunk
+      }
+      continue;
+    }
+    if (state === 'EXPECT_FILE_HEADER') {
+      if (reDel.test(line)) { pendingFrom = 'EXPECT_FILE_HEADER'; state = 'PENDING'; continue; }
+      const a = reAdd.exec(line);
+      if (a) { open(a[1]); state = 'IN_HUNK'; continue; } // tolerans: çiftsiz `+++ b/` açılışı
+      if (reDevNull.test(line)) continue;                 // `+++ /dev/null` — skip (belgeli)
+      if (line.startsWith('@@')) state = 'IN_HUNK';       // tolerans: başlıksız @@ → hunk
+      continue;                                           // `diff --git`, `index`, mode … yoksayılır
+    }
+    // IN_HUNK: `+`-önekli her satır içerik; yalnız başlık adayı çifti ve `/dev/null` başlıkları hariç.
+    if (reDel.test(line)) { pendingFrom = 'IN_HUNK'; state = 'PENDING'; continue; } // yeni dosya adayı
+    if (reDevNull.test(line)) continue; // `+++ /dev/null` — içerik DEĞİL (belgeli skip)
+    if (current !== null && line.startsWith('+')) out.get(current)?.push(line.slice(1)); // `+`, `+---`, `++++` … hepsi içerik
+    // ` `, `-`, `@@`, `diff --git` … yoksayılır (eski kodun trim tuzağı burada imkansız)
   }
   return [...out.entries()].map(([path, lines]) => ({ path, addedContent: lines.join('\n') }));
 }
@@ -55,6 +106,9 @@ export async function runReviewDiff(args: {
         gateConfigHash: computeGateConfigHash(args.repoPath),
         model: args.policy.llm.model,
         budgetUsd: args.policy.budgetUsd,
+        // R14 (faz 3 T5 ertelenen minor): koşulan gate kümesi kanıta birebir yazılır — pipeline
+        // ordered() policy.gates+advisory ile seçim yapar; snapshot daima koşulan kümeyle uyumlu.
+        gates: args.policy.gates,
       },
     });
   }

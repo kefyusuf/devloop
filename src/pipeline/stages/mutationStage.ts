@@ -103,7 +103,9 @@ export class MutationStage implements ReviewStage {
       const survived = survivedInTouchedFiles(readFileSync(reportPath, 'utf8'), ctx.artifact.files.map((f) => f.path));
       for (const m of survived) {
         findings.push({ id: randomUUID(), stage: this.name, category: 'mutation', severity: 'critical', confidence: 1,
-          evidence: { file: m.file, line: m.line }, corroborated: false,
+          // R14 (faz 3 T8): mutant kimliği evidence.mutantId'ye yazılır (şema alanı faz 3 T1'den beri
+          // mevcuttu — faz 2 final dalgası bulguları bu alanı doldurmuyordu; kanıt zinciri tamamlanır).
+          evidence: { file: m.file, line: m.line, mutantId: m.id }, corroborated: false,
           suggestion: `Survived mutant (${m.status}, id ${m.id}) @ ${m.file}:${m.line} — test bu mutasyonu öldürmüyor (R3).` });
       }
     }

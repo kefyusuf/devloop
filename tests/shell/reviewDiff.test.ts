@@ -73,6 +73,67 @@ describe('parseDiff', () => {
     const d = ['--- /dev/null', '+++ b/new.ts', '@@ -0,0 +1 @@', '+hello();'].join('\n');
     expect(parseDiff(d)).toEqual([{ path: 'new.ts', addedContent: 'hello();' }]);
   });
+
+  // R14 (faz 3 T8) hüküm: parseDiff durum makinesi — hunk içi tırnaklanmış diff başlığı
+  // (örn. PR'ın eklediği .patch dosyası gövdesi) kapsam KAPATMAZ/DEĞİŞTİRMEZ. Sözleşme testi:
+  // içerik satırı tam olarak `--- a/fake.ts` → sonraki `+` satırları HÂLÂ ilk dosyaya gider.
+  it('hunk içi `--- a/fake.ts` içerik satırı kapsam kapatmaz — sonraki + satırları ilk dosyaya gider', () => {
+    const d = [
+      '--- a/real.ts', '+++ b/real.ts', '@@ -1,2 +1,4 @@',
+      ' const x=1;',
+      '--- a/fake.ts',
+      '+const y=2;', '+const z=3;',
+    ].join('\n');
+    expect(parseDiff(d)).toEqual([{ path: 'real.ts', addedContent: 'const y=2;\nconst z=3;' }]);
+  });
+
+  // Eski kodun trim() hatası: context satırı ` --- a/fake.ts` → trim sonrası `^--- ` eşleşir,
+  // orijinal satır '--- a/' ile başlamadığı için kapsam KAPANIYORDU — sonraki + satırları düşüyordu.
+  it('hunk içi context ` --- a/fake.ts` kapsam kapatmaz (trim tuzağı)', () => {
+    const d = [
+      '--- a/docs/p.md', '+++ b/docs/p.md', '@@ -1,2 +1,3 @@',
+      ' alıntı:',
+      ' --- a/fake.ts',
+      '+real content',
+    ].join('\n');
+    expect(parseDiff(d)).toEqual([{ path: 'docs/p.md', addedContent: 'real content' }]);
+  });
+
+  // Eski kodun ikinci trim() hatası: context ` +++ b/fake.ts` → trim sonrası header regex'e
+  // yakalanır ve kapsam fake.ts'e ATFEDİLİYORDU — sonraki + satırları yanlış dosyaya gidiyordu.
+  it('hunk içi context ` +++ b/fake.ts` kapsamı çalması (misattribution)', () => {
+    const d = [
+      '--- a/docs/p.md', '+++ b/docs/p.md', '@@ -1,2 +1,3 @@',
+      ' alıntı:',
+      ' +++ b/fake.ts',
+      '+real content',
+    ].join('\n');
+    expect(parseDiff(d)).toEqual([{ path: 'docs/p.md', addedContent: 'real content' }]);
+  });
+
+  // PR'ın eklediği .patch dosyası: içerik `--- a/`, `+++ b/` ile başlıyorsa diff kodlaması
+  // `+--- a/…` / `++++ b/…` olur — eski kod `+++` önekini dışladığı için `++++ b/` satırı DÜŞUYORDU.
+  it('eklenen .patch dosyası içeriği birebir toplanır (`++++ b/` satırı dahil)', () => {
+    const d = [
+      '--- a/notes.patch', '+++ b/notes.patch', '@@ -0,0 +1,4 @@',
+      '+diff --git a/fake.ts b/fake.ts',
+      '+--- a/fake.ts',
+      '++++ b/fake.ts',
+      '+const y=2;',
+    ].join('\n');
+    expect(parseDiff(d)).toEqual([{ path: 'notes.patch', addedContent: 'diff --git a/fake.ts b/fake.ts\n--- a/fake.ts\n+++ b/fake.ts\nconst y=2;' }]);
+  });
+
+  it('çok dosyalı diff: gerçek başlık çifti (`--- a/` + `+++ b/`) hunk sonrası yeni dosya açar', () => {
+    const d = [
+      '--- a/a.ts', '+++ b/a.ts', '@@ -1 +1,2 @@', ' ctx', '+one',
+      '--- a/b.ts', '+++ b/b.ts', '@@ -1 +1,2 @@', ' ctx', '+two',
+    ].join('\n');
+    expect(parseDiff(d)).toEqual([
+      { path: 'a.ts', addedContent: 'one' },
+      { path: 'b.ts', addedContent: 'two' },
+    ]);
+  });
 });
 
 describe('review-diff exit kodları', () => {
@@ -90,6 +151,8 @@ describe('review-diff exit kodları', () => {
     expect(typeof snap.gateConfigHash).toBe('string');
     expect(snap.model).toBe(ciPolicy.llm.model);
     expect(snap.budgetUsd).toBe(ciPolicy.budgetUsd);
+    // R14 (faz 3 T5 ertelenen minor): configSnapshot.gates — koşulan gate kümesi kanıta birebir yazılır.
+    expect(snap.gates).toEqual(ciPolicy.gates);
     // event zinciri: RunStarted → TaskPicked → ArtifactProduced → StageVerdict/RiskScored; runId ci-<task>
     expect(store.query({ runId: 'ci-t1', type: 'TaskPicked' }).length).toBe(1);
     const art = store.query({ runId: 'ci-t1', type: 'ArtifactProduced' })[0];

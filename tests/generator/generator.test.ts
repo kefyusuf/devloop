@@ -124,3 +124,17 @@ it('denylist case-insensitive: Policy.YAML da reddedilir', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'apci-'));
   await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'Policy.YAML', content: 'x' }] })).rejects.toThrow('Yasaklı');
 });
+
+// R14 (faz 3 T8): gate-config denylist genişletme — tsconfig.json / eslint.config.js / .eslintrc.json
+// politika/aracı yüzeyidir; case-variant'ları da düşer (R4b lowercase karşılaştırması), normal
+// kaynak dosyası (src/x.ts) yazılmaya devam eder.
+it('gate-config denylist: tsconfig/eslint yüzeyleri (case-variant dahil) reddedilir, src/x.ts yazılır', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apgc-'));
+  const denied = ['TsConfig.JSON', 'ESLint.config.js', '.ESLintrc.json', 'tsconfig.json', 'eslint.config.js', '.eslintrc.json'];
+  for (const path of denied) {
+    await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path, content: 'evil' }] }), path)
+      .rejects.toThrow('Yasaklı yol reddedildi');
+  }
+  await applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'src/x.ts', content: 'export {};' }] });
+  expect(readFileSync(join(dir, 'src', 'x.ts'), 'utf8')).toBe('export {};');
+});

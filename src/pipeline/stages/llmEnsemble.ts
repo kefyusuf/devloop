@@ -44,6 +44,10 @@ export class LlmEnsembleStage implements ReviewStage {
     }
     const findings = [...byKey.values()];
     const status = r1.status === 'error' && (r2?.status ?? 'error') === 'error' ? 'error' : 'pass';
-    return { status, findings, durationMs: Date.now() - t0, ...(r1.status === 'error' || r2?.status === 'error' ? { errorMessage: 'ensemble: bir reviewer hata verdi' } : {}) };
+    // R14 (faz 3 T8): errorMessage CHILD nedenleri bileştirir — sabit 'bir reviewer hata verdi'
+    // yerine her iki reviewer'ın gerçek hata mesajları '; ' ile birleştirilir; ikisi de mesajsızsa
+    // genel literal kalır. Diagnozda kök neden (hangi reviewer, neden) event kanıtında görünür.
+    const errorMessage = [r1.errorMessage, r2?.errorMessage].filter(Boolean).join('; ') || 'ensemble: bir reviewer hata verdi';
+    return { status, findings, durationMs: Date.now() - t0, ...(r1.status === 'error' || r2?.status === 'error' ? { errorMessage } : {}) };
   }
 }

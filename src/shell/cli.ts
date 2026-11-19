@@ -114,8 +114,18 @@ export function buildCli(workDir = process.cwd()): Command {
 
   const learn = program.command('learn').description('aday dersleri listele/onayla');
   learn.action(async () => {
-    const candidates = generateCandidates(store());
-    console.log(candidates.map((c) => `${c.lessonId}  [${c.pattern}→${c.targetComponent}]  ${c.rule}`).join('\n') || '(aday yok)');
+    const { policy } = loadConfig(repoDir());
+    const s = store();
+    const candidates = generateCandidates(s);
+    const listed = candidates.map((c) => `${c.lessonId}  [${c.pattern}→${c.targetComponent}]  ${c.rule}`).join('\n');
+    if (listed) { console.log(listed); return; }
+    // R14 (faz 3 T8): boş liste çıplak '(aday yok)' demez — karar sayısı L2 indüksiyon eşiğinin
+    // (l2MinDecisions) altındaysa açık bildirim verir: kullanıcı L2'nin neden devre dışı olduğunu
+    // ve ne kadar karar biriktiğini görür (SHIP kalıntısı: sessiz boş çıktı diagnoza kapalıydı).
+    const decisions = s.query({ type: 'HumanDecision' });
+    console.log(decisions.length < policy.l2MinDecisions
+      ? `L2 devre dışı (l2MinDecisions=${policy.l2MinDecisions}, mevcut: ${decisions.length})`
+      : '(aday yok)');
   });
   learn.command('confirm').argument('<lessonId>').action(async (lessonId: string) => {
     const s = store();

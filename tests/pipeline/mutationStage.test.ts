@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -129,6 +129,8 @@ describe('MutationStage birim', () => {
     expect(r.findings[0].severity).toBe('critical');
     expect(r.findings[0].evidence.file).toBe('src/a.ts');
     expect(r.findings[0].evidence.line).toBe(1);
+    // R14 (faz 3 T8): mutant kimliği evidence.mutantId'ye kanıtlanır (şema alanı faz 3 T1'den beri var).
+    expect(r.findings[0].evidence.mutantId).toBe('1');
     expect(r.findings[0].suggestion).toContain('Survived'); // kanıt: mutant statüsü + no
     expect(r.findings[0].suggestion).toContain('id 1');
   });
@@ -332,11 +334,24 @@ describe('MutationStage gerçek Stryker koşumu', () => {
     expect(aggregate!.suggestion).toContain('testler mutantları öldürmüyor');
     const survived = r.findings.filter((f) => f.evidence.file !== '(mutation-report)');
     expect(survived.length).toBeGreaterThanOrEqual(1); // fixture'ın iki mutantı da Survived (skor 0%)
+    // R14 (faz 3 T8): mutantId kanıtı GERÇEK raporla çapraz doğrulanır — evidence.mutantId boş olmayan
+    // bir string olmalı ve rapordaki gerçek survived mutant id'lerinden biriyle eşleşmelidir.
+    const reportPath = [join(dir, 'reports', 'mutation', 'results.json'), join(dir, 'reports', 'mutation', 'mutation.json')]
+      .find((p) => existsSync(p));
+    expect(reportPath).toBeDefined();
+    const report = JSON.parse(readFileSync(reportPath!, 'utf8')) as { files?: Record<string, { mutants?: Array<{ id?: unknown; status?: unknown }> }> };
+    const reportSurvivedIds = new Set<string>(
+      Object.values(report.files ?? {}).flatMap((fe) => (fe.mutants ?? []).filter((m) => m.status === 'Survived').map((m) => String(m.id))),
+    );
+    expect(reportSurvivedIds.size).toBeGreaterThanOrEqual(1);
     for (const s of survived) {
       expect(s.category).toBe('mutation');
       expect(s.severity).toBe('critical');
       expect(s.evidence.file).toBe('src/math.ts');
       expect(s.evidence.line).toBe(1);
+      expect(typeof s.evidence.mutantId).toBe('string');
+      expect((s.evidence.mutantId as string).length).toBeGreaterThan(0);
+      expect(reportSurvivedIds.has(s.evidence.mutantId as string)).toBe(true); // rapordaki gerçek mutant id'siyle eşleşir
       expect(s.suggestion).toContain('Survived'); // mutant statüsü kanıtta
       expect(s.suggestion).toMatch(/id \d+/); // mutant no kanıtta
     }

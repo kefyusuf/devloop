@@ -28,6 +28,22 @@ describe('CLI', () => {
     expect(out.join('\n')).toContain('chain=ok');
   });
 
+  // R14 (faz 3 T8): L2 bildirimi — karar sayısı l2MinDecisions eşiğinin altındayken learn çıktısı
+  // çıplak '(aday yok)' yerine açık neden verir: 'L2 devre dışı (l2MinDecisions=…, mevcut: …)'.
+  it('learn: karar sayısı eşik altında → L2 devre dışı bildirimi (çıplak aday-yok yerine)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-l2-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    // 1 karar (< varsayılan l2MinDecisions=100) → aday da yok (pattern eşiği ≥2)
+    await store.append('HumanDecision', 'r1', 't1', 'h', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [] });
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    await buildCli(dir).parseAsync(['node', 'devloop', 'learn']);
+    console.log = origLog;
+    expect(out.join('\n')).toContain('L2 devre dışı');
+    expect(out.join('\n')).toContain('l2MinDecisions=100');
+    expect(out.join('\n')).toContain('mevcut: 1');
+  });
+
   // R5 (faz 2 T7): learn proposals/apply — policy l2MinDecisions eşiği (policy.yaml yok → varsayılan 100).
   it('learn proposals listeler + learn apply ProposalCreated yazar ve PROPOSAL.md stage eder', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli3-'));

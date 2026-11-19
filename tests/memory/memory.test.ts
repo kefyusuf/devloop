@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LessonMemory } from '../../src/memory/memory.js';
+import { LessonMemory, tokenize } from '../../src/memory/memory.js';
 import { VerdictStore } from '../../src/store/store.js';
 import { readFileSync, existsSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
@@ -41,4 +41,15 @@ it('Unicode tokenizasyon: diakritikli kelime eşleşir', async () => {
   await store.append('LessonLearned', 'r', 't', 'l', { lessonId: 'u1', rule: 'kullanırken timeout unutma', scope: '*', confidence: 0.9, status: 'active', targetComponent: 'generator', parentDecisionEventIds: [] });
   const mem = new LessonMemory(store, file);
   expect(mem.contextFor({ id: 't', description: 'kullanırken dikkat', acceptanceCriteria: ['a'], filesScope: [] })).toContain('timeout');
+});
+
+// R14 (faz 3 T8) R4c pin: tokenize export — `\P{L}+/u` bölme + uzunluk > 3 filtresi. Eski `\W+`
+// split'i ASCII'de kalıyordu: 'çağrılırken' → ['','a','r','l','rken'] parçalanıyordu (filtre sonrası
+// yalnız 'rken' kalıyordu); Unicode harf sınıfıyla kelime TEK token olarak kalır.
+it('tokenize: diakritikli kelime TEK tam token (eski \\W+ davranışı parçalıyordu)', () => {
+  expect(tokenize('çağrılırken')).toEqual(['çağrılırken']);
+  expect(tokenize('çağrılırken')).toContain('çağrılırken');
+  // sözleşme: küçük harf normalizasyonu + uzunluk > 3 filtresi ('yaz' 3 harf → düşer)
+  expect(tokenize('HTTP client yaz')).toEqual(['http', 'client']);
+  expect(tokenize('abc ab kelime')).toEqual(['kelime']);
 });

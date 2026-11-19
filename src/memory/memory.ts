@@ -7,6 +7,17 @@ import type { TaskSpec } from '../contracts/schemas.js';
 
 type Lesson = EventPayloadMap['LessonLearned'];
 
+/**
+ * R4c (faz 3 T8 pin export): Unicode harf sınıfına göre tokenizasyon — `\P{L}+/u` ile böl,
+ * uzunluk > 3 filtrele. Eski `\W+` ASCII'de kalıyordu: 'çağrılırken' gibi diakritikli kelimeler
+ * ['','a','r','l','rken'] parçalanıyordu; `\p{L}` tüm dillerin harflerini tek token'da tutar.
+ * Ders-metin eşleşmesi (contextFor) bu token'larla çalışır — export edilmesi pin'in kendisidir:
+ * davranış değişirse test doğrudan kırılır.
+ */
+export function tokenize(text: string): string[] {
+  return text.toLowerCase().split(/[^\p{L}]+/u).filter((w) => w.length > 3);
+}
+
 export class LessonMemory implements LessonsProvider {
   constructor(private readonly store: VerdictStore, private readonly lessonsFile: string) {}
 
@@ -23,9 +34,9 @@ export class LessonMemory implements LessonsProvider {
   }
 
   contextFor(task: TaskSpec): string {
-    // R4c: \W+ ASCII'de kalmıştı — 'kullanırken' gibi diakritikli kelimeler parçalanıyordu;
-    // Unicode harf sınıfı ([^\p{L}]+, u bayraklı) tüm dillerin harflerini tek token'da tutar.
-    const words = `${task.description} ${task.acceptanceCriteria.join(' ')}`.toLowerCase().split(/[^\p{L}]+/u).filter((w) => w.length > 3);
+    // R4c: tokenize() üzerinden — \W+ ASCII'de kalmıştı; Unicode harf sınıfı diakritikli
+    // kelimeleri tek token'da tutar (bkz. tokenize dokümantasyonu — R14 pin export).
+    const words = tokenize(`${task.description} ${task.acceptanceCriteria.join(' ')}`);
     const lessons = this.active('generator');
     const relevant = lessons.filter((l) => words.some((w) => `${l.rule} ${l.scope}`.toLowerCase().includes(w)));
     const chosen = relevant.length > 0 ? relevant : lessons.slice(0, 5);

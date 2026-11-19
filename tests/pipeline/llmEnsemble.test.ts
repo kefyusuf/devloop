@@ -65,4 +65,15 @@ describe('LlmEnsembleStage', () => {
     const one = await new LlmEnsembleStage(errStage('llm-reviewer'), mkStage('llm-reviewer-alt', []), policy).evaluate(ctx(50));
     expect(one.status).toBe('pass');
   });
+
+  // R14 (faz 3 T8): ensemble errorMessage CHILD nedenleri bileştirir — her iki reviewer da FARKLI
+  // mesajlarla hata verirse ensemble errorMessage İKİSİNİ de içerir (diagnozda kök neden kaybolmaz).
+  it('her ikisi error + farklı mesajlar → ensemble errorMessage İKİ child nedeni de taşır', async () => {
+    const errStage = (name: string, msg: string): ReviewStage =>
+      ({ name, kind: 'advisory' as const, evaluate: vi.fn(async () => ({ status: 'error' as const, findings: [], durationMs: 1, errorMessage: msg })) });
+    const r = await new LlmEnsembleStage(errStage('llm-reviewer', 'primary: ağ 500'), errStage('llm-reviewer-alt', 'alt: şema bozuk'), policy).evaluate(ctx(50));
+    expect(r.status).toBe('error');
+    expect(r.errorMessage).toContain('primary: ağ 500');
+    expect(r.errorMessage).toContain('alt: şema bozuk');
+  });
 });

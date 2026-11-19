@@ -6,8 +6,11 @@ import type { Artifact } from '../contracts/schemas.js';
  * I3 (final review): agent'ın dokunamayacağı politika/kanıt/bağımlılık yüzeyleri — fail-closed.
  * policy.yaml: gate politikası; .devloop/: devloop kanıt günlüğü + worktree'ler; .gitignore:
  * repo sahibinin izin yüzeyi; package.json: bağımlılık yüzeyi (araç zinciri güvenliği).
+ * R14 (faz 3 T8): gate-config yüzeyleri de kapalı — tsconfig.json (derleyici politikası),
+ * eslint.config.js / .eslintrc.json (lint gate politikası). Aksi halde artifact, gate sonuçlarını
+ * değiştirerek kendi çıktısını onaylatabilir (gate-manipülasyonu).
  */
-const DENIED_EXACT = new Set(['policy.yaml', '.gitignore', 'package.json']);
+const DENIED_EXACT = new Set(['policy.yaml', '.gitignore', 'package.json', 'tsconfig.json', 'eslint.config.js', '.eslintrc.json']);
 
 /** A5: canonicalization + `..` reddi + symlink denetimi. Repo dışına yazma yok. */
 export async function applyArtifact(repoPath: string, artifact: Artifact): Promise<void> {

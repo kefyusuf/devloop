@@ -54,7 +54,8 @@ describe('AnthropicGateway', () => {
     const fetchMock = vi.fn().mockResolvedValue(api('bozuk'));
     const g = new AnthropicGateway(policy, fetchMock as typeof fetch, sleepImpl);
     await expect(g.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
-    expect(sleeps.length).toBeGreaterThan(0);
-    expect(Math.max(...sleeps)).toBeLessThanOrEqual(4000);
+    // R14 (faz 3 T8) pin: backoff dizisi birebir — primary deneme 0,1 → 500,1000 (son deneme
+    // beklemez); fallback deneme 0,1 → 500,1000 (son deneme beklemez). cap 4s zaten dizide görünür.
+    expect(sleeps).toEqual([500, 1000, 500, 1000]);
   });
 });
