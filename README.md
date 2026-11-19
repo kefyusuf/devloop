@@ -60,8 +60,81 @@ devloop status
 
 ## Güvenlik sınırı (v1)
 
-- **Trusted repositories only.** Worktree kaynak izolasyonudur, sandbox değildir; güvenilmeyen repo koşullandırılmaz (container izolasyonu faz 2).
+- **Trusted repositories only.** Worktree kaynak izolasyonudur, sandbox değildir; güvenilmeyen repo koşullandırılmaz (container izolasyonu faz 3).
 - Komutlar sabit executable (eslint/tsc/vitest), shell yok, timeout'lu.
 - PR yetkisi: oluştur var, merge yok. Hedef repoda branch protection + zorunlu status check kullanın.
+
+## Faz 2
+
+### LLM ensemble (iki heterojen reviewer)
+
+- Advisory review iki reviewer'dan oluşur: **ana reviewer** (doğruluk/okunabilirlik/mimari/güvenlik/performans
+  beş eksenli rubrik) + **alt reviewer** (güvenlik/performans odaklı ayrı rubrik; `llm.fallbackModel`
+  override'ı ile farklı modelde koşabilir).
+- Aynı `dosya:satır:kategori` anahtarını iki taraf da ürettiğinde bulgu **`corroborated: true`** ile
+  işaretlenir (tek kaynaklı bulgu `false` kalır); kopya ensemble içinde tek kazanan'a indirilir —
+  en şiddetli bulgu birebir korunur.
+- Alt reviewer yalnız ana reviewer bulgulu olduğunda **veya** risk skoru `ensembleRiskThreshold`
+  (varsayılan 40) üzerinde olduğunda koşur; eşik altı bulgusuz koşumda tek reviewer çağrısı yapılır.
+
+### Gerçek mutation gate
+
+- Hedef repoda `stryker.config.json` **varsa** `mutation-testing` gate'i gerçek Stryker koşumu yapar
+  (hedef repoda araç yoksa devloop node_modules fallback'i) ve mutation skorunu ayrıştırır: skor
+  `mutationScoreThreshold` (varsayılan 60) altındaysa critical bulgu + gate fail.
+- Config **yoksa** gate `skipped` olur — sessiz pass yok; skip kanıta StageVerdict olarak iner ve
+  varsayılan `authorizedSkips` bunu kapsar.
+- `mutationTimeoutMinutes` (varsayılan 15) aşımı veya ayrıştırılamayan çıktı fail-closed error'dur.
+
+### CI trigger mode (review-diff)
+
+```bash
+devloop review-diff --diff pr.diff --task pr-17
+```
+
+- Generator'sız çalışır: unified diff'ten dosya başına eklenen satırlar artifact'a kurılır, gate'ler +
+  ensemble advisory koşar, event'ler aynı store'a append edilir. Örnek GitHub Actions iş akışı:
+  `docs/ci/github-actions.yml`.
+- **Exit kodları:** `0` = gates pass + critical bulgu yok; `1` = gate fail veya critical bulgu;
+  `2` = yalnız advisory bulgular.
+- Kararlar yine insanın (`devloop decide`) — CI insan gate'ini değiştirmez (D3).
+
+### L2 kural indüksiyonu (staging-only, insan onaylı)
+
+```bash
+devloop learn proposals             # tekrarlayan reject kararlarından öneri listesi
+devloop learn apply <proposalId>    # öneriyi yalnız <repo>/.devloop/proposals/<id>/ staging'ine yazar
+```
+
+- Öneriler deterministiktir (kategori + karar seti hash'i); global eşik `l2MinDecisions`
+  (varsayılan 100) altında L2 devre dışıdır.
+- `apply` repoya/policy'a **otomatik yazım yapmaz** — değişmez: staging dışına tek bayt yazım yok;
+  öneriyi insan onayıyla elle uygular.
+
+### Bütçe doğruluğu (R1)
+
+- Bütçe tek kapısı genişletildi: generator'un **ve** ensemble reviewer'larının tüm gerçek LLM harcaması
+  (`usage.costUsd`) aynı `BudgetedGateway` örneğinden sayılır; paylaşılan örnek üzerindeki kümülasyon
+  bütçeyi aşınca koşum anında abort eder.
+
+### Dayanıklılık (R4)
+
+- Gateway geçici hatalarda üstel backoff (`llm.backoffMs`, varsayılan 500) ile retry + fallback model;
+  tükeniş `GatewayError` → run-level suspend (panic), resume ile sürer.
+- Gate config parmak izi (`gateConfigHash`: tsconfig/eslint config içerik sha256'sı) RunStarted kanıtına
+  yazılır; resume'da config kayması panic'tir — sessiz politika karışımı yok.
+
+### Faz 2 policy alanları
+
+| Alan | Varsayılan | Anlamı |
+| --- | --- | --- |
+| `ensembleRiskThreshold` | `40` | Risk skoru bunun üzerindeyse alt reviewer bulgusuz da koşar |
+| `mutationScoreThreshold` | `60` | Stryker mutation skorunun altı → critical bulgu + gate fail |
+| `mutationTimeoutMinutes` | `15` | Stryker koşum zaman aşımı (aşım fail-closed) |
+| `llm.backoffMs` | `500` | Gateway retry backoff tabanı (üstel) |
+| `l2MinDecisions` | `100` | L2 öneri üretimi için gereken minimum insan karar sayısı |
+
+Tümü `.default()` ile geldiğinden mevcut `policy.yaml` dosyaları geriye dönük uyumludur; policy
+değişiklikleri insan-onaylı review'e tabidir (§5.2.2).
 
 Detaylı tasarım: `docs/superpowers/specs/2026-11-18-ai-dev-loop-design.md`

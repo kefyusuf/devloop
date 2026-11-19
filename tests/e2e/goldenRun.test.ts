@@ -3,18 +3,31 @@ import { Orchestrator, type OrchestratorDeps } from '../../src/orchestrator/orch
 import { VerdictStore, validateChain } from '../../src/store/store.js';
 import { ReviewPipeline } from '../../src/pipeline/pipeline.js';
 import { RiskTriageStage } from '../../src/pipeline/stages/riskTriage.js';
+import { LlmEnsembleStage } from '../../src/pipeline/stages/llmEnsemble.js';
 import { loadConfig } from '../../src/config/config.js';
 import { cpSync, mkdtempSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import type { StageResult } from '../../src/contracts/review.js';
+import type { StageResult, ReviewStage } from '../../src/contracts/review.js';
 import type { Artifact } from '../../src/contracts/schemas.js';
 
 const base = loadConfig(process.cwd()).policy;
-const policy = { ...base, gates: ['risk-triage', 'static-gates'], advisory: [] };
+// Faz 2 (R2): golden koşum gerçek montaj biçimine geçti — advisory'de llm-ensemble VAR
+// (gerçek LLM kısıtı korunur: ensemble reviewer'ları fake stage stand-in'leridir, gateway kullanmazlar).
+const policy = { ...base, gates: ['risk-triage', 'static-gates'], advisory: ['llm-ensemble'] };
 const fixture = join(process.cwd(), 'tests', 'fixtures', 'sample-repo');
+
+// İki fake reviewer da AYNI kategori+dosya+satır bulgusunu üretir → ensemble kendi dedupe'ünde
+// (pipeline dedupe'ünden ÖNCE) ikisini TEK corroborated=true kazanan'da birleştirir (llmEnsemble.ts hükmü).
+const fakeReviewer = (name: string): ReviewStage => ({
+  name, kind: 'advisory' as const,
+  evaluate: async (): Promise<StageResult> => ({
+    status: 'pass', durationMs: 1,
+    findings: [{ id: `${name}-f1`, stage: name, category: 'security', severity: 'required', confidence: 0.9, evidence: { file: 'src/util.ts', line: 1 }, corroborated: false }],
+  }),
+});
 
 function freshRepo() {
   const repo = mkdtempSync(join(tmpdir(), 'e2e-'));
@@ -34,6 +47,7 @@ const deps = (repo: string, store: VerdictStore): OrchestratorDeps => ({
   pipeline: new ReviewPipeline([
     new RiskTriageStage(policy),
     { name: 'static-gates', kind: 'gate' as const, evaluate: async (): Promise<StageResult> => ({ status: 'pass', findings: [], durationMs: 1 }) },
+    new LlmEnsembleStage(fakeReviewer('llm-reviewer'), fakeReviewer('llm-reviewer-alt'), policy),
   ], policy),
   gateway: { complete: vi.fn(async () => ({ data: {}, usage: { inputTokens: 10, outputTokens: 10, costUsd: 0.0001 } })) } as never,
   policy, repoPath: repo, pr: { openPr: vi.fn(async () => ({ url: 'https://pr.example/e2e' })) } as never,
@@ -46,9 +60,20 @@ describe('E2E golden koşu (A6 değişmezleri)', () => {
     expect(summary.prs).toHaveLength(1);
 
     const events = store.readAll();
-    // Düzeltme 2: iki StageVerdict (risk-triage + static-gates); fixture pipeline bulgu üretmez → FindingEmitted yok.
-    expect(events.map((e) => e.type)).toEqual(['RunStarted', 'TaskPicked', 'ArtifactProduced', 'StageVerdict', 'StageVerdict', 'RiskScored', 'PRCreated']);
+    // Faz 2 (R2): pipeline üç stage — risk-triage + static-gates + llm-ensemble (advisory) → ÜÇ StageVerdict;
+    // FindingEmitted artık VAR: ensemble dedupe iki fake reviewer bulgusunu (aynı anahtar) TEK corroborated
+    // kazanan'a indirir → tam 1 FindingEmitted, RiskScored'dan sonra, PRCreated'dan önce.
+    expect(events.map((e) => e.type)).toEqual(['RunStarted', 'TaskPicked', 'ArtifactProduced', 'StageVerdict', 'StageVerdict', 'StageVerdict', 'RiskScored', 'FindingEmitted', 'PRCreated']);
     expect(validateChain(events).ok).toBe(true);
+
+    // Faz 2 (R2): corroborated bayrağı kazanan bulguyla kanıt zincirine akar — iki heterojen reviewer
+    // aynı güvenlik bulgusunda anlaştı (security @ src/util.ts:1), tek kaynaklı false kalmaz.
+    const findingEvents = events.filter((e) => e.type === 'FindingEmitted');
+    expect(findingEvents).toHaveLength(1);
+    const finding = findingEvents[0].payload.finding;
+    expect(finding.corroborated).toBe(true);
+    expect(finding.category).toBe('security');
+    expect(finding.evidence.file).toBe('src/util.ts');
 
     const risk = events.find((e) => e.type === 'RiskScored')!.payload;
     expect(risk.score).toBe(20); // scopePaths=1 × 0.2 → gerçek skor, 0 DEĞİL (inceleme D)
