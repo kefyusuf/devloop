@@ -64,7 +64,9 @@ export function buildCli(workDir = process.cwd()): Command {
     // stage ve deps.gateway'a AYNI örnek geçilir. Böylece gerçek harcayan her çağrı bütçe sayacına
     // düşer; orchestrator içi ayrı sarmalama/canary çağrısı yoktur (kaldırıldı).
     const gateway = new BudgetedGateway(createGateway(policy), policy.budgetUsd, () => {});
-    const adapter = new TypeScriptAdapter();
+    // R13: adapter policy alır — sandbox.mode docker ise lint/typecheck/tests koşumları konteynere
+    // sarılır (dockerizeSpawn); host modda davranış değişmez.
+    const adapter = new TypeScriptAdapter(policy);
     // R2 (T4): advisory zinciri llm-reviewer → llm-ensemble. Primary daima koşar; alt (güvenlik+
     // performans rubriği, fallbackModel override) yalnız primary bulgulu veya risk ≥ eşikte koşar.
     // Bu kayıt, policy advisory [llm-ensemble, ...] ile PipelineConfigError penceresini kapatır.
@@ -186,7 +188,7 @@ export function buildCli(workDir = process.cwd()): Command {
       const diffText = opts.diff === '-' ? readFileSync(0, 'utf8') : readFileSync(opts.diff, 'utf8');
       const mem = memory();
       const gateway = new BudgetedGateway(createGateway(policy), policy.budgetUsd, () => {});
-      const adapter = new TypeScriptAdapter();
+      const adapter = new TypeScriptAdapter(policy); // R13: sandbox modu koşullu docker sarmalayıcı
       // R11 (faz 3 T5): risk-tiered çift pipeline — stage örnekleri paylaşımlı kurulur; runReviewDiff
       // triaj skoru < ciEnsembleRiskThreshold → gatePipeline, değilse fullPipeline seçer.
       // Gate pipeline'ı ensemble'sızdır (advisory: [] override — low-risk CI koşumu LLM harcamaz);
@@ -227,7 +229,7 @@ export function buildCli(workDir = process.cwd()): Command {
         throw new Error(`aday policy dizininde policy.yaml yok: ${opts.candidate}`);
       }
       const effPolicy = opts.candidate ? loadConfig(opts.candidate).policy : loadConfig(repoDir()).policy;
-      const adapter = new TypeScriptAdapter();
+      const adapter = new TypeScriptAdapter(effPolicy); // R13: eval pipeline'ı da sandbox moduna uyar
       const stages: ReviewStage[] = [
         new RiskTriageStage(effPolicy), new StaticGatesStage(adapter), new TestGateStage(adapter),
         new SecretScanStage(), new MutationStage(effPolicy),
@@ -283,7 +285,7 @@ export function buildCli(workDir = process.cwd()): Command {
       // reviewerLessons olarak candidatePlaybookProvider verilir — aday playbook böylece eval'e
       // GERÇEKTEN girer. Policy = production policy (playbook-only shadow). Eval yolu bütçe sayacı
       // TUTMAZ (eval komutuyla aynı hüküm — shadow, harcayan üretim çağrısı değildir).
-      const adapter = new TypeScriptAdapter();
+      const adapter = new TypeScriptAdapter(policy); // R13: shadow eval pipeline'ı da sandbox moduna uyar
       const gateway = createGateway(policy);
       const pipeline = new ReviewPipeline([
         new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),

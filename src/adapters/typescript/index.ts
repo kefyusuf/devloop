@@ -6,7 +6,9 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { StackAdapter, TestRunResult } from '../types.js';
 import type { Finding } from '../../contracts/schemas.js';
+import type { Policy } from '../../config/config.js';
 import { safeEnv } from '../../shell/safeEnv.js';
+import { dockerizeSpawn } from '../../shell/sandbox.js';
 import { parseEslintJson, parseTscOutput, parseVitestOutput } from './parsers.js';
 
 const run = promisify(execFile);
@@ -36,11 +38,15 @@ interface ToolOutput { stdout: string; stderr: string; exitedCleanly: boolean; k
  * - nonzero exit → çıktı aynen döner (exitedCleanly: false, bayraklar false) — parse yolu
  * - fatal (timeout kill / ENOBUFS, stdout var) → bayraklı döner; ÇAĞIRAN throw eder → stage 'error'
  * - fatal ve stdout yok (spawn sınıfı hata) → burada THROW edilir → stage catch → 'error'
+ *
+ * R13: spawn hedefi çağıranın seçimine bağlı — host modda process.execPath + [bin, ...args],
+ * docker modda dockerizeSpawn çıktısı (cmd=docker, konteyner içi npx). A6 sınıflandırma
+ * mantığı iki mod için AYNIdır — başarısız komut hiçbir zaman sessizce pass olmaz.
  */
-export async function runTool(repoPath: string, bin: string, args: string[], timeoutMs: number = SPAWN.timeout): Promise<ToolOutput> {
+export async function spawnTool(cmd: string, toolArgs: string[], repoPath: string, timeoutMs: number = SPAWN.timeout): Promise<ToolOutput> {
   // I2 (final review): sırlar (API anahtarları vb.) çocuk sürece sızmaz — env seçilmiş ayak izi.
   try {
-    const r = await run(process.execPath, [bin, ...args], { cwd: repoPath, env: safeEnv(), ...SPAWN, timeout: timeoutMs });
+    const r = await run(cmd, toolArgs, { cwd: repoPath, env: safeEnv(), ...SPAWN, timeout: timeoutMs });
     return { stdout: r.stdout, stderr: r.stderr ?? '', exitedCleanly: true, killed: false, truncated: false };
   } catch (e) {
     const err = e as Rejection;
@@ -51,6 +57,11 @@ export async function runTool(repoPath: string, bin: string, args: string[], tim
     // nonzero exit → parse edilebilir çıktı; fatal ama çıktı var (timeout kill / ENOBUFS) → bayrakla dön
     return { stdout: err.stdout ?? '', stderr: err.stderr ?? '', exitedCleanly: false, killed: err.killed === true || !!err.signal, truncated: err.code === 'ENOBUFS' };
   }
+}
+
+/** R13 öncesi imza korunur (mutationStage ve mevcut testler host modda bu yolu kullanır). */
+export async function runTool(repoPath: string, bin: string, args: string[], timeoutMs: number = SPAWN.timeout): Promise<ToolOutput> {
+  return spawnTool(process.execPath, [bin, ...args], repoPath, timeoutMs);
 }
 
 /**
@@ -120,10 +131,32 @@ export function evaluateStaticTool(stdout: string, exitedCleanly: boolean, findi
 export class TypeScriptAdapter implements StackAdapter {
   readonly id = 'typescript';
 
+  /**
+   * R13: policy verilirse sandbox modu uygulanır — docker modda araç koşumları dockerizeSpawn ile
+   * konteynere sarılır (bin resolve ATLANIR); verilmmezse/default host modunda mevcut davranış
+   * (resolveBin + process.execPath) korunur. Mevcut çağrılar (default-ctor) etkilenmez.
+   */
+  constructor(private readonly policy?: Policy) {}
+
+  /**
+   * Araç koşumu — mod seçimi tek kapı:
+   * - docker modda `npx <pkg> ...` konteyner içi toolchain'i çözer (toolArgs başına pkg eklenir;
+   *   resolveBin çağrılmaz — hedef reponun mount'taki node_modules'u yerleşik çözüm sağlar).
+   * - host modda mevcut yol: resolveBin → process.execPath + [bin, ...args].
+   * A6 sınıflandırma (spawnTool) iki modda aynıdır.
+   */
+  private async runToolIn(repoPath: string, pkg: string, subpath: string, errorSuffix: string, args: string[], timeoutMs?: number): Promise<ToolOutput> {
+    if (this.policy?.sandbox.mode === 'docker') {
+      const sp = dockerizeSpawn({ repoPath, policy: this.policy, bin: '', toolArgs: [pkg, ...args] });
+      return spawnTool(sp.cmd, sp.args, repoPath, timeoutMs ?? SPAWN.timeout);
+    }
+    const bin = resolveBin(repoPath, subpath);
+    if (bin === null) throw new Error(`${pkg} çözümlenemedi (hedef repo + devloop node_modules): ${errorSuffix}`);
+    return spawnTool(process.execPath, [bin, ...args], repoPath, timeoutMs ?? SPAWN.timeout);
+  }
+
   async lint(repoPath: string): Promise<Finding[]> {
-    const bin = resolveBin(repoPath, 'eslint/bin/eslint.js');
-    if (bin === null) throw new Error(`eslint çözümlenemedi (hedef repo + devloop node_modules): static-gates gate hatası`);
-    const { stdout, stderr, killed, truncated, exitedCleanly } = await runTool(repoPath, bin, ['-f', 'json', '.']);
+    const { stdout, stderr, killed, truncated, exitedCleanly } = await this.runToolIn(repoPath, 'eslint', 'eslint/bin/eslint.js', 'static-gates gate hatası', ['-f', 'json', '.']);
     if (killed || truncated) throw new Error('eslint koşumu timeout/maxBuffer ile kesildi — çıktı güvenilmez: static-gates gate hatası');
     const findings = parseEslintJson(stdout);
     // I8: nonzero exit + ayrıştırılabilir bulgu yok → sessiz pass riski — fail-closed (stderr tanı ile)
@@ -134,9 +167,7 @@ export class TypeScriptAdapter implements StackAdapter {
   }
 
   async typecheck(repoPath: string): Promise<Finding[]> {
-    const bin = resolveBin(repoPath, 'typescript/bin/tsc');
-    if (bin === null) throw new Error(`tsc çözümlenemedi (hedef repo + devloop node_modules): static-gates gate hatası`);
-    const { stdout, stderr, killed, truncated, exitedCleanly } = await runTool(repoPath, bin, ['--noEmit', '--pretty', 'false']);
+    const { stdout, stderr, killed, truncated, exitedCleanly } = await this.runToolIn(repoPath, 'tsc', 'typescript/bin/tsc', 'static-gates gate hatası', ['--noEmit', '--pretty', 'false']);
     if (killed || truncated) throw new Error('tsc koşumu timeout/maxBuffer ile kesildi — çıktı güvenilmez: static-gates gate hatası');
     const findings = parseTscOutput(stdout);
     // I8: nonzero exit + ayrıştırılabilir bulgu yok → sessiz pass riski — fail-closed (stderr tanı ile)
@@ -147,9 +178,7 @@ export class TypeScriptAdapter implements StackAdapter {
   }
 
   async runTests(repoPath: string): Promise<TestRunResult> {
-    const bin = resolveBin(repoPath, 'vitest/vitest.mjs');
-    if (bin === null) throw new Error(`vitest çözümlenemedi (hedef repo + devloop node_modules): tests gate hatası`);
-    const { stdout, exitedCleanly, killed, truncated } = await runTool(repoPath, bin, ['run']);
+    const { stdout, exitedCleanly, killed, truncated } = await this.runToolIn(repoPath, 'vitest', 'vitest/vitest.mjs', 'tests gate hatası', ['run']);
     if (killed || truncated) throw new Error('vitest koşumu timeout/maxBuffer ile kesildi — çıktı güvenilmez: tests gate hatası');
     const summary = stdout.split('\n').find((l) => l.includes('Tests')) ?? 'Tests  failed';
     return evaluateTestResult(summary, stdout, exitedCleanly);

@@ -16,6 +16,7 @@ import type { ReviewContext } from '../contracts/review.js';
 import { TaskSpecSchema, type TaskSpec, type Artifact, type Finding } from '../contracts/schemas.js';
 import type { PrReporter } from '../shell/pr.js';
 import { safeEnv } from '../shell/safeEnv.js';
+import { dockerAvailable } from '../shell/sandbox.js';
 import type { z } from 'zod';
 
 const runGit = promisify(execFile);
@@ -26,6 +27,8 @@ const git = (args: string[], cwd: string) => runGit('git', args, { cwd, env: saf
 export interface OrchestratorDeps {
   store: VerdictStore; backend: GeneratorBackend; pipeline: ReviewPipeline;
   gateway: LlmGateway; policy: Policy; repoPath: string; pr: PrReporter;
+  /** R13: docker sandbox aktivasyon probe'u — test enjeksiyonu için; verilmmezse gerçek dockerAvailable. */
+  dockerProbe?: () => Promise<boolean>;
 }
 export interface RunSummary {
   runId: string; prs: Array<{ taskId: string; url: string | null }>;
@@ -109,6 +112,15 @@ export class Orchestrator {
       // R4a: gate config parmak izi RunStarted kanıtına yazılır (policyHash yanına).
       const gateConfigHash = computeGateConfigHash(repoPath);
       await store.append('RunStarted', runId, '-', 'orchestrator', { configSnapshot: { model: policy.llm.model, budgetUsd: policy.budgetUsd, policyHash, gateConfigHash } });
+    }
+
+    // R13: docker sandbox aktivasyon kapısı — docker modu seçiliyse Docker kullanılabilirliği
+    // koşum başında doğrulanır. Sessiz host-fallback A6 ihlali olurdu (fail-open): abort kanıtla
+    // (RunAborted panic) + açık mesajla durur; koşum devam etmez.
+    if (policy.sandbox.mode === 'docker' && !(await (this.deps.dockerProbe ?? dockerAvailable)())) {
+      await store.append('RunAborted', runId, '-', 'orchestrator', { reason: 'panic' });
+      summary.aborted = 'panic';
+      throw new Error('docker modu seçili ama Docker kullanılamıyor — sessiz host-fallback A6 ihlali olurdu');
     }
 
     // A2 (C2): worktree artık repo içinde (<repo>/.devloop/worktrees/) — .devloop/ hedef reponun
