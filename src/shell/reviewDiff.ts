@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import type { Finding } from '../contracts/schemas.js';
 import type { ReviewContext } from '../contracts/review.js';
 import type { ReviewPipeline } from '../pipeline/pipeline.js';
 import type { VerdictStore } from '../store/store.js';
 import type { Policy } from '../config/config.js';
+import { computeGateConfigHash } from '../orchestrator/orchestrator.js';
 
 /**
  * R6 (faz 2 T8): CI trigger mode — review-diff. Unified diff'ten dosya başına EKLENEN satırları
@@ -34,6 +36,20 @@ export async function runReviewDiff(args: {
   const artifact = { diff: args.diffText, intent: 'ci-review', rejectedAlternatives: [], testEvidence: 'ci', files };
   const runId = `ci-${args.taskSpecId}`;
   const taskSpec = { id: args.taskSpecId, description: 'CI review-diff', acceptanceCriteria: ['gates pass'], filesScope: [] };
+  // I3 (final fix wave, A6/R4a): CI koşumları da RunStarted kanıtıyla açılır — policyHash (resume
+  // karşılaştırması) ve gateConfigHash (kanıt; orchestrator'daki ifadelerin birebir aynısı) kanıta
+  // yazılır. Idempotent: aynı runId için RunStarted zaten varsa (tekrarlı CI koşumu) ikinci kez yazılmaz.
+  if (args.store.query({ runId, type: 'RunStarted' }).length === 0) {
+    const policyHash = createHash('sha256').update(JSON.stringify(args.policy)).digest('hex').slice(0, 16);
+    await args.store.append('RunStarted', runId, args.taskSpecId, 'ci', {
+      configSnapshot: {
+        policyHash,
+        gateConfigHash: computeGateConfigHash(args.repoPath),
+        model: args.policy.llm.model,
+        budgetUsd: args.policy.budgetUsd,
+      },
+    });
+  }
   const picked = await args.store.append('TaskPicked', runId, args.taskSpecId, 'ci', { taskSpec });
   // Hüküm: brief `parentTaskEventId: 'ci'` literal'i yazıyordu — A3 nedensel bütünlük
   // (validateChain) tüm parent*EventId referanslarının GERÇEK event'lere işaret etmesini zorunlu

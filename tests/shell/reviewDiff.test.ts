@@ -30,7 +30,7 @@ async function runWith(stages: ReviewStage[], policy = ciPolicy) {
   const result = await runReviewDiff({
     diffText: DIFF, taskSpecId: 't1', pipeline: new ReviewPipeline(stages, policy), store, policy, repoPath: dir,
   });
-  return { result, store };
+  return { result, store, dir };
 }
 
 describe('parseDiff', () => {
@@ -55,11 +55,20 @@ describe('parseDiff', () => {
 
 describe('review-diff exit kodları', () => {
   it('gates pass + bulgu yok → exit 0', async () => {
-    const { result, store } = await runWith([stage('risk-triage', 'gate', 'pass')]);
+    const { result, store, dir } = await runWith([stage('risk-triage', 'gate', 'pass')]);
     expect(result.exitCode).toBe(0);
     expect(result.gateFailed).toBeNull();
     expect(result.findings).toEqual([]);
-    // event zinciri: TaskPicked → ArtifactProduced → StageVerdict/RiskScored; runId ci-<task>
+    // I3 (final fix wave): koşum RunStarted kanıtıyla açılır — policyHash + gateConfigHash (R4a)
+    const started = store.query({ runId: 'ci-t1', type: 'RunStarted' });
+    expect(started).toHaveLength(1);
+    const snap = started[0].payload.configSnapshot as Record<string, unknown>;
+    expect(typeof snap.policyHash).toBe('string');
+    expect((snap.policyHash as string).length).toBe(16);
+    expect(typeof snap.gateConfigHash).toBe('string');
+    expect(snap.model).toBe(ciPolicy.llm.model);
+    expect(snap.budgetUsd).toBe(ciPolicy.budgetUsd);
+    // event zinciri: RunStarted → TaskPicked → ArtifactProduced → StageVerdict/RiskScored; runId ci-<task>
     expect(store.query({ runId: 'ci-t1', type: 'TaskPicked' }).length).toBe(1);
     const art = store.query({ runId: 'ci-t1', type: 'ArtifactProduced' })[0];
     const verdict = store.query({ runId: 'ci-t1', type: 'StageVerdict' })[0];
@@ -69,6 +78,12 @@ describe('review-diff exit kodları', () => {
     expect(risk.payload.parentArtifactEventId).toBe(art.event_id);
     // A3: tüm parent*EventId referansları gerçek event'lere işaret eder (brief'in 'ci' literal'i değil)
     expect(validateChain(store.readAll()).ok).toBe(true);
+    // I3 idempotency: tekrarlı CI koşumu (aynı runId) İKİNCİ RunStarted yazmaz
+    await runReviewDiff({
+      diffText: DIFF, taskSpecId: 't1', pipeline: new ReviewPipeline([stage('risk-triage', 'gate', 'pass')], ciPolicy),
+      store, policy: ciPolicy, repoPath: dir,
+    });
+    expect(store.query({ runId: 'ci-t1', type: 'RunStarted' })).toHaveLength(1);
   });
   it('gate fail → exit 1', async () => {
     const { result, store } = await runWith([stage('risk-triage', 'gate', 'fail', [F('f1', 'required', 'risk-triage')])]);
