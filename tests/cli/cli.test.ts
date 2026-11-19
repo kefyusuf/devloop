@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildCli } from '../../src/shell/cli.js';
 import { VerdictStore } from '../../src/store/store.js';
 import { generateProposals } from '../../src/learning/learn.js';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -56,5 +56,24 @@ describe('CLI', () => {
     // applied → yeniden listelenmez; bilinmeyen ID hata verir
     await expect(buildCli(dir).parseAsync(['node', 'devloop', 'learn', 'apply', p!.proposalId]))
       .rejects.toThrow('Öneri bulunamadı veya eşik altında');
+  });
+
+  // R9 (faz 3 T3): eval komutu — candidate olmadan production pipeline koşar; EvalRun
+  // configSnapshot.mode='production' yazar. Brief testi birebir; tek uyarlama yukarıdaki
+  // commander-12 notu ile aynı: { from: 'user' } + ['node','devloop',...] → "unknown command
+  // 'node'" — dosyadaki diğer testler gibi varsayılan from:'node' kuralı kullanılır.
+  it('eval komutu: candidate olmadan koşar ve EvalRun configSnapshot.mode=production yazar', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-ev-'));
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify({
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    }));
+    await buildCli(dir).parseAsync(['node', 'devloop', 'eval']);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const ev = store.query({ type: 'EvalRun' })[0];
+    expect(ev.payload.configSnapshot).toMatchObject({ mode: 'production' });
   });
 });

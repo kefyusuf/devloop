@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { join, resolve } from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { loadConfig } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
 import { AnthropicGateway } from '../gateway/gateway.js';
@@ -11,6 +11,7 @@ import { Orchestrator, BudgetedGateway } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
 import { runReviewDiff } from './reviewDiff.js';
 import { ReviewPipeline } from '../pipeline/pipeline.js';
+import type { ReviewStage } from '../contracts/review.js';
 import { RiskTriageStage } from '../pipeline/stages/riskTriage.js';
 import { StaticGatesStage } from '../pipeline/stages/staticGates.js';
 import { TestGateStage } from '../pipeline/stages/testGate.js';
@@ -174,6 +175,52 @@ export function buildCli(workDir = process.cwd()): Command {
       });
       console.log(`review-diff: exit=${r.exitCode} gateFailed=${r.gateFailed ?? '-'} findings=${r.findings.length}`);
       process.exitCode = String(r.exitCode);
+    });
+
+  // R9/R10 (faz 3 T3): eval komutu — golden set üzerinde ya production pipeline (candidate yoksa)
+  // ya da aday-policy pipeline (--candidate) koşar; karşılaştırma raporu JSON yazdırılır.
+  // SHADOW/SALT-OKUNUR: üretim config'ine SIFIR yazım — policy.yaml/lessons.md/proposals
+  // dokunulmaz; yalnız eval kanıtı (EvalRun, TaskPicked vb.) store'a yazılır. `run` komutunun
+  // aksine mem.render() çağrılmaz ve SIGINT marker yazılmaz.
+  program.command('eval')
+    .description('golden task eval — production pipeline veya aday policy karşılaştırması (shadow)')
+    .option('--candidate <policyDir>', 'aday policy dizini (policy.yaml içerir)')
+    .option('--full', 'ensemble dahil koş (LLM çağrısı yapar)')
+    .action(async (opts: { candidate?: string; full?: boolean }) => {
+      // Fail-closed: candidate policy.yaml içermiyorsa loadConfig sessizce DEFAULT_POLICY'ye düşer —
+      // farkında olmadan varsayılan policy'yle karşılaştırma yapmak R9 ölçümünü geçersiz kılar.
+      if (opts.candidate && !existsSync(join(opts.candidate, 'policy.yaml'))) {
+        throw new Error(`aday policy dizininde policy.yaml yok: ${opts.candidate}`);
+      }
+      const effPolicy = opts.candidate ? loadConfig(opts.candidate).policy : loadConfig(repoDir()).policy;
+      const adapter = new TypeScriptAdapter();
+      const stages: ReviewStage[] = [
+        new RiskTriageStage(effPolicy), new StaticGatesStage(adapter), new TestGateStage(adapter),
+        new SecretScanStage(), new MutationStage(effPolicy),
+      ];
+      if (opts.full) {
+        // Not (T3): `gatewayFactory` T6'da gelir — T3'te mevcut CLI assembly deseni kullanılır
+        // (AnthropicGateway doğrudan). Eval yolu bütçe sayacı TUTMAZ: aday değerlendirme shadow,
+        // production eval salt-okunur karşılaştırmadır; BudgetedGateway sarması bilinçli yapılmadı
+        // (T6 factory refactor CLI'a uygulandığında burası da aynı kapıya bağlanır).
+        const gateway = new AnthropicGateway(effPolicy);
+        const mem = memory();
+        stages.push(new LlmEnsembleStage(
+          new LlmReviewerStage(gateway, mem),
+          new LlmReviewerAltStage(gateway, { model: effPolicy.llm.fallbackModel, reviewerLessons: mem }),
+          effPolicy,
+        ));
+      }
+      // PipelineConfigError penceresi: advisory yalnız --full'da policy'den alınır; --full'suz
+      // koşum ensemble'suz gate setiyle tamamlanır ([] = yalnız gates).
+      const pipeline = new ReviewPipeline(stages, { ...effPolicy, gates: effPolicy.gates, advisory: opts.full ? effPolicy.advisory : [] });
+      const { runEval } = await import('../eval/evalRunner.js');
+      const summary = await runEval({
+        repoPath: repoDir(), pipeline, policy: effPolicy, store: store(),
+        l3MinGoldenTasks: effPolicy.l3MinGoldenTasks,
+        ...(opts.candidate ? { candidate: { label: opts.candidate } } : {}),
+      });
+      console.log(JSON.stringify(summary, null, 2));
     });
   return program;
 }
