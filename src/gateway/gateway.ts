@@ -19,7 +19,7 @@ function extractJson(text: string): unknown {
 
 export class AnthropicGateway implements LlmGateway {
   private readonly apiKey: string;
-  constructor(private readonly policy: Policy, private readonly fetchImpl: typeof fetch = fetch) {
+  constructor(private readonly policy: Policy, private readonly fetchImpl: typeof fetch = fetch, private readonly sleepImpl: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))) {
     this.apiKey = process.env[policy.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'LLM_API_KEY'] ?? '';
   }
 
@@ -49,6 +49,7 @@ export class AnthropicGateway implements LlmGateway {
             return { data: req.schema.parse(extractJson(text)), usage: this.usage(body.usage) };
           } catch (e) { lastError = e; /* bozuk JSON/şema/okunamaz gövde → retry */ }
         }
+        if (attempt < MAX_JSON_RETRIES) await this.sleepImpl(Math.min(4000, this.policy.llm.backoffMs * (attempt + 1))); // yalnız gerçek retry'da: başarılı return ve break sonrası beklemez
       }
     }
     const cause = lastError instanceof Error ? lastError.message : String(lastError);

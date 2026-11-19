@@ -48,4 +48,13 @@ describe('AnthropicGateway', () => {
     const sent = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body);
     expect(sent.model).toBe('ozel-model');
   });
+  it('retry denemeleri arasında backoff uygulanır (cap 4s)', async () => {
+    const sleeps: number[] = [];
+    const sleepImpl = vi.fn(async (ms: number) => { sleeps.push(ms); });
+    const fetchMock = vi.fn().mockResolvedValue(api('bozuk'));
+    const g = new AnthropicGateway(policy, fetchMock as typeof fetch, sleepImpl);
+    await expect(g.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
+    expect(sleeps.length).toBeGreaterThan(0);
+    expect(Math.max(...sleeps)).toBeLessThanOrEqual(4000);
+  });
 });
