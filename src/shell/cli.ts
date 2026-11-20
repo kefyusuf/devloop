@@ -9,7 +9,7 @@ import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
 import {
   generateEvolutionCandidates, writeShadowCandidates, applyEvolution, loadCandidate, candidatePlaybookProvider,
-  loadAppliedPlaybooks, type EvolveContext,
+  loadAppliedPlaybooks, generateLlmMutations, type EvolveContext, type EvolutionCandidate, type LlmMutationDraft,
 } from '../evolution/evolve.js';
 import { runEval, type EvalSummary } from '../eval/evalRunner.js';
 import { loadGoldenTasks } from '../eval/golden.js';
@@ -308,7 +308,12 @@ export function buildCli(workDir = process.cwd()): Command {
   });
   const evolve = program.command('evolve').description('L3 evrim: shadow aday üretimi + golden-gerileme kapılı apply');
   evolve.option('--shadow', 'playbook aday üretimi + shadow eval')
-    .action(async (opts: { shadow?: boolean }) => {
+    // R19 (faz 4 T4): --llm — deterministik shadow akışı bittikten SONRA LLM üretimli playbook
+    // mutasyon taslakları da candidate/'e yazılır. --llm YOKSA davranış aynen (mutasyon gateway
+    // çağrısı hiç yapılmaz — deterministik mod). R19 kapılar: yalnız l3Active + golden gerileme
+    // YOKken çalışır; anahtarsız ortamda GatewayError fail-closed yukarı fırlar.
+    .option('--llm', 'shadow sonrası LLM üretimli mutasyon taslakları (R19 — l3Active + gerileme kapılı, anahtarsız fail-closed)')
+    .action(async (opts: { shadow?: boolean; llm?: boolean }) => {
       if (!opts.shadow) throw new Error('--shadow gerekli (v3: yalnız shadow modu desteklenir)');
       const { policy } = loadConfig(repoDir());
       const s = store();
@@ -351,7 +356,28 @@ export function buildCli(workDir = process.cwd()): Command {
         repoPath: repoDir(), pipeline, policy, store: s, l3MinGoldenTasks: policy.l3MinGoldenTasks,
         candidate: { label: 'evolve-shadow' },
       });
-      console.log(JSON.stringify({ candidates, shadowEval, baseline: { evalId: baseline.evalId, failed: baseline.failed, score: baseline.score } }, null, 2));
+      const out: {
+        candidates: EvolutionCandidate[];
+        shadowEval: EvalSummary;
+        baseline: { evalId: string; failed: number; score: number };
+        llmMutations?: LlmMutationDraft[];
+      } = { candidates, shadowEval, baseline: { evalId: baseline.evalId, failed: baseline.failed, score: baseline.score } };
+      // R19 (faz 4 T4): --llm yalnız shadow koşumu SONRASINDA devreye girer; gateway tamamen
+      // dışarıdan inject edilir (generateLlmMutations). --llm YOKSA mutasyon gateway çağrısı hiç
+      // yapılmaz — deterministik davranış aynen. Hatalar (eşik-altı throw, golden-gerileme throw,
+      // GatewayError) yakalanır: anlamlı mesaj stderr'e + exit non-zero; deterministik sonuç
+      // JSON'u stdout'ta aynen yazılır (parse edilebilir kalır).
+      if (opts.llm) {
+        try {
+          const mutGateway = createGateway(policy); // yalnız --llm'de kurulur
+          out.llmMutations = await generateLlmMutations({ ctx, gateway: mutGateway, baseline, shadowEval });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`evolve --llm başarısız: ${msg}`);
+          process.exitCode = '1';
+        }
+      }
+      console.log(JSON.stringify(out, null, 2));
     });
   evolve.command('apply').argument('<evoId>')
     .description('adayı golden-gerileme kapısıyla playbook staging dizinine yaz')
