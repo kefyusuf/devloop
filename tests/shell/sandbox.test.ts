@@ -39,7 +39,9 @@ describe('dockerizeSpawn (R13)', () => {
   };
   afterEach(() => { vi.unstubAllEnvs(); });
 
-  it('docker modu: run --rm -v worktree -v original/node_modules -w /workspace [-e bloğu] --network none image npx toolArgs (sıra hükmü, fix round 1)', () => {
+  // R20 (faz 4 T5): node_modules bind read-only (:ro) — hardening; konteyner bağımlılıkları
+  // yazamaz (worktree mount'u yazılabilir kalır, node_modules yalnız çözümleme kaynağıdır).
+  it('docker modu: run --rm -v worktree -v original/node_modules:ro -w /workspace [-e bloğu] --network none image npx toolArgs (sıra hükmü, fix round 1 + R20 :ro)', () => {
     vi.stubEnv('GIT_DIR', 'C:\\repo\\.git');
     vi.stubEnv('GIT_CONFIG', '/dev/null');
     const r = dockerizeSpawn({
@@ -51,14 +53,21 @@ describe('dockerizeSpawn (R13)', () => {
     expect(r.args).toEqual([
       'run',
       '--rm',
-      '-v', 'C:/repo/.devloop/worktrees/run1234-t1:/workspace',           // worktree mount — forward-slash normalize
-      '-v', 'C:/Users/repo/proj/node_modules:/workspace/node_modules',    // I2: hedef reponun KENDİ toolchain'i
+      '-v', 'C:/repo/.devloop/worktrees/run1234-t1:/workspace',                 // worktree mount — forward-slash normalize
+      '-v', 'C:/Users/repo/proj/node_modules:/workspace/node_modules:ro',       // I2 + R20: hedef reponun KENDİ toolchain'i, READ-ONLY
       '-w', '/workspace',
       ...gitEnvFlags(), // I1: yalnız GIT_*/SSH_* — blok -w /workspace ile --network arasında
       '--network', 'none',
       'node:20-bookworm-slim',
       'npx', 'tsc', '--version', // toolArgs aynen — docker modda bin resolve ATLANIR, konteyner içi npx çözer
     ]);
+  });
+
+  it('R20: node_modules bind :ro içerir — konteyner bağımlılık yazımı engelli (read-only hardening)', () => {
+    const r = dockerizeSpawn({ repoPath: '/repo', originalRepoPath: '/orig', policy: dockerPolicy, bin: '', toolArgs: ['tsc'] });
+    const bind = r.args.find((a) => a.includes(':/workspace/node_modules'));
+    expect(bind).toBeDefined();
+    expect(bind!.endsWith(':ro')).toBe(true);
   });
 
   it('I1: -e yalnız GIT_*/SSH_* — ANTHROPIC_API_KEY / PATH / SYSTEMROOT YOK, GIT_DIR / GIT_CONFIG VAR', () => {

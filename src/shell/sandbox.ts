@@ -33,9 +33,10 @@ export async function dockerAvailable(fetchlessProbe?: typeof execFile): Promise
  * - worktree → /workspace (repoPath; orchestrator'da .devloop/worktrees/<runId>-<task> altında).
  * - originalRepoPath verilmişse ORİJİNAL reponun node_modules'u → /workspace/node_modules
  *   (konteyner içi parent-walk eşdeğeri — npx /workspace'ten yerel çözümleme yapar; --network
- *   none altında registry erişimi yok). originalRepoPath verilmediyse ikinci bind YOK — repo
- *   toolchain'i konteynerde yoksa npx fail-closed error üretir (dokümante davranış; sessiz
- *   host-fallback yok).
+ *   none altında registry erişimi yok). R20 (faz 4 T5): bind READ-ONLY (:ro) — hardening;
+ *   konteyner bağımlılık ağacına yazamaz, node_modules yalnız çözümleme kaynağıdır.
+ *   originalRepoPath verilmediyse ikinci bind YOK — repo toolchain'i konteynerde yoksa npx
+ *   fail-closed error üretir (dokümante davranış; sessiz host-fallback yok).
  *
  * I1 env hükmü: -e flag'leri YALNIZ 'GIT_' / 'SSH_' önekli değişkenleri taşır (case-insensitive;
  * safeEnv'in git/ssh kimlik akışı kuralı). PATH/SYSTEMROOT/COMSPEC/TEMP/HOME vb. TÜMÜ hariç
@@ -47,7 +48,8 @@ export function dockerizeSpawn(args: { repoPath: string; originalRepoPath?: stri
   if (policy.sandbox.mode !== 'docker') return { cmd: bin, args: toolArgs };
   const dockerArgs = ['run', '--rm', '-v', `${repoPath.replaceAll('\\', '/')}:/workspace`];
   if (originalRepoPath !== undefined) {
-    dockerArgs.push('-v', `${originalRepoPath.replaceAll('\\', '/')}/node_modules:/workspace/node_modules`);
+    // R20 (faz 4 T5): :ro — read-only hardening (bağımlılık ağacı konteynerden yazılamaz).
+    dockerArgs.push('-v', `${originalRepoPath.replaceAll('\\', '/')}/node_modules:/workspace/node_modules:ro`);
   }
   dockerArgs.push('-w', '/workspace', '--network', 'none', policy.sandbox.image, 'npx', ...toolArgs);
   // I1: -e bloğu '-w /workspace' ile '--network' ARASINA girer (ilk hükmün konum semantiği;

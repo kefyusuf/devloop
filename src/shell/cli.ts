@@ -89,7 +89,9 @@ export function buildCli(workDir = process.cwd()): Command {
     );
     const pipeline = new ReviewPipeline([
       new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-      new SecretScanStage(), new MutationStage(policy),
+      // R20 (faz 4 T5): mutation gate docker modda konteynerde koşar (faz 3.1 guard'ı kalktı);
+      // originalRepoPath — dockerizeSpawn node_modules :ro çift mount kaynağı (adapter wiring'iyle aynı).
+      new SecretScanStage(), new MutationStage(policy, undefined, repoDir()),
       ensemble,
     ], policy);
     const orchestrator = new Orchestrator({
@@ -222,7 +224,7 @@ export function buildCli(workDir = process.cwd()): Command {
       // full pipeline aynı gates + llm-ensemble advisory override ile koşar.
       const gateStages = [
         new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-        new SecretScanStage(), new MutationStage(policy),
+        new SecretScanStage(), new MutationStage(policy, undefined, repoDir()),
       ];
       // I2 (final fix wave): review-diff CI yolu da `run` assembly'siyle aynı kompozisyonu kullanır —
       // applied playbook'lar CI reviewer prompt'undan da eksik kalmasın.
@@ -264,7 +266,7 @@ export function buildCli(workDir = process.cwd()): Command {
       const adapter = new TypeScriptAdapter(effPolicy, repoDir()); // R13 + I2: eval pipeline'ı da sandbox moduna uyar
       const stages: ReviewStage[] = [
         new RiskTriageStage(effPolicy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-        new SecretScanStage(), new MutationStage(effPolicy),
+        new SecretScanStage(), new MutationStage(effPolicy, undefined, repoDir()),
       ];
       if (opts.full) {
         // T6: gateway createGateway(effPolicy) ile kurulur (provider'a göre Anthropic/OpenAI).
@@ -345,7 +347,7 @@ export function buildCli(workDir = process.cwd()): Command {
       const gateway = createGateway(policy);
       const pipeline = new ReviewPipeline([
         new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-        new SecretScanStage(), new MutationStage(policy),
+        new SecretScanStage(), new MutationStage(policy, undefined, repoDir()),
         new LlmEnsembleStage(
           new LlmReviewerStage(gateway, provider),
           new LlmReviewerAltStage(gateway, { model: altModelFor(policy), reviewerLessons: provider }), // I3: provider-aware alt model
