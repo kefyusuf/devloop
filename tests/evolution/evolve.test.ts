@@ -29,7 +29,13 @@ const { gatewayCompleteSpy } = vi.hoisted(() => ({
 }));
 vi.mock('../../src/gateway/factory.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/gateway/factory.js')>();
-  return { ...actual, createGateway: () => ({ complete: gatewayCompleteSpy }) };
+  // R21 (faz 4 T6): CLI createGateways + ChainedGateway kullanır — mock createGateways'i de
+  // override eder (tek ayak = spy gateway; CLI length===1 düz gateway seçer → davranış aynen).
+  return {
+    ...actual,
+    createGateway: () => ({ complete: gatewayCompleteSpy }),
+    createGateways: () => [{ complete: gatewayCompleteSpy }],
+  };
 });
 
 // R19: generateLlmMutations spy-wrapped (gerçek impl korunur) — deterministik modda "--llm yoksa

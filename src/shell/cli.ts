@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { loadConfig, type Policy } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
-import { createGateway, altModelFor } from '../gateway/factory.js';
+import { createGateways, ChainedGateway, altModelFor } from '../gateway/factory.js';
 import { LlmGeneratorBackend } from '../generator/generator.js';
 import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
@@ -67,7 +67,10 @@ export function buildCli(workDir = process.cwd()): Command {
     // I1 (final review): bütçe TEK KAPI — BudgetedGateway CLI'da kurulur ve backend, reviewer
     // stage ve deps.gateway'a AYNI örnek geçilir. Böylece gerçek harcayan her çağrı bütçe sayacına
     // düşer; orchestrator içi ayrı sarmalama/canary çağrısı yoktur (kaldırıldı).
-    const gateway = new BudgetedGateway(createGateway(policy), policy.budgetUsd, () => {});
+    // R21 (faz 4 T6): cross-provider fallback — chain (tek ayakta düz gateway); BudgetedGateway
+    // sarması aynen ve TÜM chain'i kapsar (A6: her ayak harcaması budget'a işler).
+    const gateways = createGateways(policy);
+    const gateway = new BudgetedGateway(gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways), policy.budgetUsd, () => {});
     // R13: adapter policy alır — sandbox.mode docker ise lint/typecheck/tests koşumları konteynere
     // sarılır (dockerizeSpawn); host modda davranış değişmez. I2: originalRepoPath (deps.repoPath)
     // — docker modda orijinal repo node_modules'u /workspace/node_modules'a bind edilir.
@@ -216,7 +219,9 @@ export function buildCli(workDir = process.cwd()): Command {
       const { policy } = loadConfig(repoDir());
       const diffText = opts.diff === '-' ? readFileSync(0, 'utf8') : readFileSync(opts.diff, 'utf8');
       const mem = memory();
-      const gateway = new BudgetedGateway(createGateway(policy), policy.budgetUsd, () => {});
+      // R21 (faz 4 T6): cross-provider fallback chain — BudgetedGateway sarması aynen (tüm chain budget'a işler).
+      const gateways = createGateways(policy);
+      const gateway = new BudgetedGateway(gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways), policy.budgetUsd, () => {});
       const adapter = new TypeScriptAdapter(policy, repoDir()); // R13 + I2: docker modda wt mount + orijinal node_modules bind
       // R11 (faz 3 T5): risk-tiered çift pipeline — stage örnekleri paylaşımlı kurulur; runReviewDiff
       // triaj skoru < ciEnsembleRiskThreshold → gatePipeline, değilse fullPipeline seçer.
@@ -269,10 +274,11 @@ export function buildCli(workDir = process.cwd()): Command {
         new SecretScanStage(), new MutationStage(effPolicy, undefined, repoDir()),
       ];
       if (opts.full) {
-        // T6: gateway createGateway(effPolicy) ile kurulur (provider'a göre Anthropic/OpenAI).
-        // Eval yolu bütçe sayacı TUTMAZ: aday değerlendirme shadow,
+        // T6: gateway createGateways(effPolicy) ile kurulur (provider'a göre; R21 cross-fallback
+        // chain dahil). Eval yolu bütçe sayacı TUTMAZ: aday değerlendirme shadow,
         // production eval salt-okunur karşılaştırmadır; BudgetedGateway sarması bilinçli yapılmadı.
-        const gateway = createGateway(effPolicy);
+        const gateways = createGateways(effPolicy);
+        const gateway = gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways);
         const mem = memory();
         // I2 (final fix wave): eval --full üretim pipeline'ının donmuş yargıcıdır — reviewerLessons
         // `run` assembly'siyle AYNI kompozisyon (mem + applied playbook'lar), aksi halde eval üretim
@@ -344,7 +350,9 @@ export function buildCli(workDir = process.cwd()): Command {
       // GERÇEKTEN girer. Policy = production policy (playbook-only shadow). Eval yolu bütçe sayacı
       // TUTMAZ (eval komutuyla aynı hüküm — shadow, harcayan üretim çağrısı değildir).
       const adapter = new TypeScriptAdapter(policy, repoDir()); // R13 + I2: shadow eval pipeline'ı da sandbox moduna uyar
-      const gateway = createGateway(policy);
+      // R21 (faz 4 T6): cross-provider fallback chain — eval yolu gibi budget sayacı tutmaz (aynen).
+      const gateways = createGateways(policy);
+      const gateway = gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways);
       const pipeline = new ReviewPipeline([
         new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
         new SecretScanStage(), new MutationStage(policy, undefined, repoDir()),
@@ -371,7 +379,9 @@ export function buildCli(workDir = process.cwd()): Command {
       // JSON'u stdout'ta aynen yazılır (parse edilebilir kalır).
       if (opts.llm) {
         try {
-          const mutGateway = createGateway(policy); // yalnız --llm'de kurulur
+          // R21 (faz 4 T6): mutasyon gateway'i de chain — yalnız --llm'de kurulur.
+          const mutGateways = createGateways(policy);
+          const mutGateway = mutGateways.length === 1 ? mutGateways[0] : new ChainedGateway(mutGateways);
           out.llmMutations = await generateLlmMutations({ ctx, gateway: mutGateway, baseline, shadowEval });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
