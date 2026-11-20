@@ -110,6 +110,21 @@ describe('LlmGeneratorBackend playbook bağlamı (R18)', () => {
     await new LlmGeneratorBackend(gw2, undefined, loadAppliedPlaybooks(dir)).generate(task, { ...base, lessons: '', feedback: [] });
     expect(captured2()).not.toContain('GENERATOR PLAYBOOK');
   });
+
+  // Fix round 1 (exact-sentinel gating): substring gate (`includes('yok.')`) not içinde 'yok.'
+  // geçen MEŞRU insan-onaylı playbook'u da sessizce düşürüyordu (Türkçe eksiklik ifadesi tam da
+  // evrim notlarının kullandığı dil). Hüküm: yalnız BİREBİR sentinel ('Generator playbook önerisi
+  // yok.') bloğu düşürür — metin içinde geçen 'yok.' blok yaşamaya devam eder.
+  it('not içinde \'yok.\' geçen meşru playbook bloğu DÜŞÜRÜLMEZ (exact-sentinel, fix round 1)', async () => {
+    const { gw, captured } = captureGateway();
+    const dir = mkdtempSync(join(tmpdir(), 'gpb3-'));
+    const base = readRepoContext(dir, ['src/']);
+    const note = 'kural A uygulanır; boş alan yok. kural B: isimler fiil olsun.';
+    const noteProvider = { generatorContext: () => note };
+    await new LlmGeneratorBackend(gw, undefined, noteProvider).generate(task, { ...base, lessons: '', feedback: [] });
+    expect(captured()).toContain('GENERATOR PLAYBOOK');
+    expect(captured()).toContain(note);
+  });
 });
 
 describe('applyArtifact güvenliği', () => {

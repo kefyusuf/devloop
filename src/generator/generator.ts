@@ -72,9 +72,14 @@ export class LlmGeneratorBackend implements GeneratorBackend {
     const gw = ctx.gateway ?? this.gateway;
     if (!gw) throw new Error('Generator için gateway yok (ctx.gateway veya ctor)');
     const lessons = ctx.lessons || this.memory?.contextFor(task) || 'Aktif ders yok.';
-    // R18: sentinel ('yok.') ve boş bağlam prompt'a kirlilik taşımaz — blok yalnız dolu bağlamda kurulur.
+    // R18: yalnız BİREBİR sentinel ('Generator playbook önerisi yok.') bloğu düşürür — fix round 1:
+    // eski `includes('yok.')` substring kapısı, not içinde 'yok.' geçen meşru insan-onaylı playbook'u
+    // (Türkçe eksiklik ifadesi — tam da evrim notlarının kullandığı dil) sessizce düşürüyordu.
+    // Boş bağlam da blok kurmaz.
     const playbook = this.playbookProvider?.generatorContext() ?? '';
-    const playbookBlock = playbook && !playbook.includes('yok.') ? `GENERATOR PLAYBOOK (insan-onaylı kurallar):\n${playbook}` : '';
+    const playbookBlock = playbook && playbook !== 'Generator playbook önerisi yok.'
+      ? `GENERATOR PLAYBOOK (insan-onaylı kurallar):\n${playbook}`
+      : '';
     const feedbackBlock = ctx.feedback.length === 0 ? '' :
       `ÖNCEKİ TUR BULGULARI (bunları çöz):\n${ctx.feedback.map((f) => `- [${f.severity}] ${f.category} @ ${f.evidence.file}:${f.evidence.line ?? '-'}: ${f.suggestion ?? ''}`).join('\n')}`;
     const repoBlock = [
