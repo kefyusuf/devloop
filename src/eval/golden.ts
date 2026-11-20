@@ -25,5 +25,13 @@ export function loadGoldenTasks(repoPath: string): { tasks: GoldenTask[]; invali
     try { tasks.push(GoldenTaskSchema.parse(JSON.parse(readFileSync(join(dir, name), 'utf8')))); }
     catch { invalid.push(name); }
   }
+  // R17 (faz 4 T1): duplicate goldenId tespiti — aynı goldenId'li ikinci (ve sonraki) dosyalar
+  // tasks'a GİRMEZ; invalid listesine `duplicate:<id>` olarak yazılır (sessiz hariç tutum yok:
+  // eval harness zayıf sinyali rapor etsin). Kopya üzerinde yinelenir, orijinalden splice edilir.
+  const seen = new Set<string>();
+  for (const t of [...tasks]) {
+    if (seen.has(t.goldenId)) { invalid.push(`duplicate:${t.goldenId}`); tasks.splice(tasks.indexOf(t), 1); }
+    else seen.add(t.goldenId);
+  }
   return { tasks, invalid };
 }

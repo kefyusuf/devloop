@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { join, resolve } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { loadConfig, type Policy } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
 import { createGateway, altModelFor } from '../gateway/factory.js';
@@ -13,6 +13,7 @@ import {
 } from '../evolution/evolve.js';
 import { runEval, type EvalSummary } from '../eval/evalRunner.js';
 import { loadGoldenTasks } from '../eval/golden.js';
+import { generateGoldenDrafts, acceptDraft, discardDraft } from '../golden/draft.js';
 import { Orchestrator, BudgetedGateway } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
 import { runReviewDiff } from './reviewDiff.js';
@@ -358,5 +359,27 @@ export function buildCli(workDir = process.cwd()): Command {
       await applyEvolution(ctx, candidate, evalRunToSummary(shadowEv.payload, policy.l3MinGoldenTasks), evalRunToSummary(baseEv.payload, policy.l3MinGoldenTasks));
       console.log(`Evrim uygulandı: ${evoId} — playbook staging dosyası yazıldı (insan devreye alır) + ProposalCreated kaydedildi.`);
     });
+
+  // R17 (faz 4 T1): golden dataset küratörlüğü — kabul koşum kanıtından taslak üretimi + insan
+  // onaylı kabul/ret. A5 değişmezi: `draft` YALNIZ .devloop/golden-drafts/ staging'ine yazar;
+  // golden/ dizinine yalnız `accept` (rename) dokunur — otomatik golden büyümesi kapalıdır.
+  const goldenCmd = program.command('golden').description('golden dataset küratörlüğü');
+  goldenCmd.command('draft').option('--from-run <runId>').action(async (opts: { fromRun?: string }) => {
+    const r = await generateGoldenDrafts({ store: store(), repoPath: repoDir(), draftsDir: join(repoDir(), '.devloop', 'golden-drafts'), ...(opts.fromRun ? { fromRun: opts.fromRun } : {}) });
+    console.log(JSON.stringify(r, null, 2));
+  });
+  goldenCmd.command('list').action(async () => {
+    const d = join(repoDir(), '.devloop', 'golden-drafts');
+    const names = existsSync(d) ? readdirSync(d).filter((n) => n.endsWith('.task.json')) : [];
+    console.log(names.join('\n') || '(taslak yok)');
+  });
+  goldenCmd.command('accept').argument('<draftId>').action(async (id: string) => {
+    acceptDraft(join(repoDir(), '.devloop', 'golden-drafts'), join(repoDir(), '.devloop', 'golden'), id);
+    console.log('Golden görev kabul edildi.');
+  });
+  goldenCmd.command('discard').argument('<draftId>').action(async (id: string) => {
+    discardDraft(join(repoDir(), '.devloop', 'golden-drafts'), id);
+    console.log('Taslak atıldı.');
+  });
   return program;
 }

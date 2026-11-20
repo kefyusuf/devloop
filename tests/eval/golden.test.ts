@@ -30,4 +30,16 @@ describe('loadGoldenTasks', () => {
     expect(tasks).toHaveLength(0);
     expect(invalid).toHaveLength(1);
   });
+
+  // R17 (faz 4 T1): duplicate goldenId tespiti — aynı goldenId'li iki dosyadan yalnız ilki
+  // tasks'a girer; ikincisi invalid listesine `duplicate:<id>` olarak yazılır.
+  it('duplicate goldenId: ikinci kopya invalid listesine duplicate:<id> olarak düşer', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'golden3-'));
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify(GOLDEN));
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1-copy.task.json'), JSON.stringify({ ...GOLDEN }));
+    const { tasks, invalid } = loadGoldenTasks(dir);
+    expect(tasks).toHaveLength(1);
+    expect(invalid).toEqual(['duplicate:g1']);
+  });
 });
