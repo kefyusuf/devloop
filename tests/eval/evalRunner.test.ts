@@ -96,4 +96,26 @@ describe('runEval', () => {
     expect(r.invalid).toEqual([]);
     expect(store.query({ type: 'EvalRun' })[0].payload.invalid).toEqual([]);
   });
+
+  // R22 (faz 4 T3): evalId çarpışma — seed yalnız repoPath+tasks.length+invalid iken aynı repo +
+  // aynı golden setten arka arkaya iki koşum Date.now() AYNI milisaniyeye düşerse ÇAKIŞIRDI;
+  // randomUUID seed'e eklendi — evalId (ve runId) her koşumda benzersiz. Date.now dondurulur:
+  // aynen eski seed'le iki koşum birebir aynı evalId'yi üretir (RED kanıtı), randomUUID ile ayrışır.
+  it('R22: aynı repo+golden setten arka arkaya iki runEval → farklı evalId (aynı ms dahil)', async () => {
+    const dir = makeRepo([GOLDEN]);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const args = { repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks };
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000); // aynı-milisaniye çakışması simülasyonu
+    let r1: Awaited<ReturnType<typeof runEval>>;
+    let r2: Awaited<ReturnType<typeof runEval>>;
+    try {
+      r1 = await runEval(args);
+      r2 = await runEval(args);
+    } finally {
+      nowSpy.mockRestore();
+    }
+    expect(r1.evalId).not.toBe(r2.evalId);
+    const ids = store.query({ type: 'EvalRun' }).map((e) => e.payload.evalId);
+    expect(new Set(ids).size).toBe(2); // kanıtta da çarpışma yok
+  });
 });

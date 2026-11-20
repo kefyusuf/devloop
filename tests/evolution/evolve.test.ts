@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { EvalSummary } from '../../src/eval/evalRunner.js';
 import { LlmReviewerStage } from '../../src/pipeline/stages/llmReviewer.js';
+import { composeReviewerLessons } from '../../src/shell/composeLessons.js'; // R22 (faz 4 T3): cli.ts kompozisyonu artık GERÇEK helper'la aynalanır
 import type { LlmGateway } from '../../src/gateway/gateway.js';
 import type { ReviewContext } from '../../src/contracts/review.js';
 import { z } from 'zod';
@@ -209,12 +210,14 @@ describe('loadAppliedPlaybooks (applied playbook → reviewer prompt, I2)', () =
     };
     writeShadowCandidates(ctx, [applied]);
     await applyEvolution(ctx, applied, baseSummary({ evalId: 's', failed: 0 }), baseSummary()); // staging: .devloop/playbooks/evo-ap1.json
-    // cli.ts kompozisyonunun birebir aynası: [mem, playbooks] — 'yok.' bildirimleri filtrelenir
+    // cli.ts kompozisyonunun birebir aynası: [mem, playbooks] — R22 (faz 4 T3) ile cli.ts
+    // composeReviewerLessons helper'ını kullanır; ayna da GERÇEK helper'la kurulur (satır bazlı
+    // 'yok.' filtresi — blok düşürme yok).
     const mem = { reviewerContext: () => 'Reviewer dersi yok.' }; // boş LessonMemory davranışı
     const playbooks = loadAppliedPlaybooks(dir);
     expect(playbooks.reviewerContext()).toContain('"off-by-one" false-positive tekrarı');
     expect(playbooks.reviewerContext()).toContain('kanıt eşiği yükseltilmeli');
-    const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
+    const reviewerLessons = composeReviewerLessons([mem, playbooks]);
     // capture deseni (llmReviewer.test.ts ile aynı): mock gateway user/system'i yakalar
     let capturedSystem = '';
     let capturedUser = '';

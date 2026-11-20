@@ -107,3 +107,25 @@ describe('faz 2 policy alanları', () => {
     expect(policy.authorizedSkips).toEqual(['mutation-testing']);
   });
 });
+
+// R22 (faz 4 T3): policy çapraz değişken invariant — mutationScopeLow mutationScopeHigh'dan
+// küçük olmalı (mutation stage low-risk'te Low, yüksek riskte High kullanır; eşit/ters aralık
+// geçersiz politikadır).
+describe('mutationScope invariant (R22 superRefine)', () => {
+  function tmpDirWithScopes(low: number, high: number): string {
+    const dir = tmpDir(); // POLICY şablonu policy.yaml olarak yazılır
+    writeFileSync(join(dir, 'policy.yaml'), POLICY + `mutationScopeLow: ${low}\nmutationScopeHigh: ${high}\n`);
+    return dir;
+  }
+  it('scopeLow > scopeHigh → reddedilir', () => {
+    expect(() => loadConfig(tmpDirWithScopes(10, 5))).toThrow(/mutationScopeLow/);
+  });
+  it('scopeLow === scopeHigh → reddedilir (sınır < ile zorlanır)', () => {
+    expect(() => loadConfig(tmpDirWithScopes(10, 10))).toThrow(/mutationScopeLow/);
+  });
+  it('scopeLow < scopeHigh → kabul edilir', () => {
+    const { policy } = loadConfig(tmpDirWithScopes(3, 7));
+    expect(policy.mutationScopeLow).toBe(3);
+    expect(policy.mutationScopeHigh).toBe(7);
+  });
+});

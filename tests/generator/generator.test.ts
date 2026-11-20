@@ -200,3 +200,20 @@ it('gate-config denylist: tsconfig/eslint yüzeyleri (case-variant dahil) redded
   await applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'src/x.ts', content: 'export {};' }] });
   expect(readFileSync(join(dir, 'src', 'x.ts'), 'utf8')).toBe('export {};');
 });
+
+// R22 (faz 4 T3): denylist kardeş yüzeyler — eski eslintrc formatları (.eslintrc.js/.cjs/.yml) ve
+// alternatif flat-config uzantıları (eslint.config.mjs/.cjs) DA lint-gate politikası yüzeyidir;
+// case-variant'ları da düşer (R4b lowercase karşılaştırması), normal kaynak dosyası yazılır.
+it('denylist kardeş yüzeyler: eslintrc/eslint-config varyantları (case dahil) reddedilir, src/x.ts yazılır', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apws-'));
+  const denied = [
+    '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.yml', 'eslint.config.mjs', 'eslint.config.cjs',
+    'Eslint.config.CJS', '.ESLintrc.YML', 'eslint.config.MJS',
+  ];
+  for (const path of denied) {
+    await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path, content: 'evil' }] }), path)
+      .rejects.toThrow('Yasaklı yol reddedildi');
+  }
+  await applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'src/x.ts', content: 'export {};' }] });
+  expect(readFileSync(join(dir, 'src', 'x.ts'), 'utf8')).toBe('export {};');
+});

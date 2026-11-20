@@ -17,6 +17,7 @@ import { generateGoldenDrafts, acceptDraft, discardDraft } from '../golden/draft
 import { Orchestrator, BudgetedGateway } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
 import { runReviewDiff } from './reviewDiff.js';
+import { composeReviewerLessons } from './composeLessons.js'; // R22 (faz 4 T3): per-line 'yok.' filtresi — 3 site tek helper
 import { ReviewPipeline } from '../pipeline/pipeline.js';
 import type { ReviewStage } from '../contracts/review.js';
 import type { DevloopEvent, EventPayloadMap } from '../contracts/events.js';
@@ -75,10 +76,11 @@ export function buildCli(workDir = process.cwd()): Command {
     // performans rubriği, fallbackModel override) yalnız primary bulgulu veya risk ≥ eşikte koşar.
     // Bu kayıt, policy advisory [llm-ensemble, ...] ile PipelineConfigError penceresini kapatır.
     // I2 (final fix wave): reviewerLessons ARTIK KOMPOZE — aktif reviewer dersleri (mem) + apply
-    // edilmiş playbook'lar (loadAppliedPlaybooks: .devloop/playbooks staging'i) aynı prompt'a girer;
-    // iki kaynağın 'yok.' bildirimleri filtrelenir (boş kaynak prompt'a kirlilik taşımaz).
+    // edilmiş playbook'lar (loadAppliedPlaybooks: .devloop/playbooks staging'i) aynı prompt'a girer.
+    // R22 (faz 4 T3): kompozisyon composeReviewerLessons helper'ına taşındı — 'yok.' filtresi
+    // SATIR bazlıdır (blok düşürme yok: tek kaynağın 'yok.' bildirimi diğerinin satırlarını düşürmez).
     const playbooks = loadAppliedPlaybooks(repoDir());
-    const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
+    const reviewerLessons = composeReviewerLessons([mem, playbooks]);
     const ensemble = new LlmEnsembleStage(
       new LlmReviewerStage(gateway, reviewerLessons), // A4: reviewer dersleri + I2 applied playbook'lar
       // I3: alt model provider-aware (anthropic/openai) — hardcode anthropic fallbackModel yerine
@@ -224,8 +226,9 @@ export function buildCli(workDir = process.cwd()): Command {
       ];
       // I2 (final fix wave): review-diff CI yolu da `run` assembly'siyle aynı kompozisyonu kullanır —
       // applied playbook'lar CI reviewer prompt'undan da eksik kalmasın.
+      // R22 (faz 4 T3): composeReviewerLessons — per-line 'yok.' filtresi (blok düşürme yok).
       const playbooks = loadAppliedPlaybooks(repoDir());
-      const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
+      const reviewerLessons = composeReviewerLessons([mem, playbooks]);
       const ensemble = new LlmEnsembleStage(
         new LlmReviewerStage(gateway, reviewerLessons),
         new LlmReviewerAltStage(gateway, { model: altModelFor(policy), reviewerLessons }), // I3: provider-aware alt model
@@ -272,8 +275,9 @@ export function buildCli(workDir = process.cwd()): Command {
         // I2 (final fix wave): eval --full üretim pipeline'ının donmuş yargıcıdır — reviewerLessons
         // `run` assembly'siyle AYNI kompozisyon (mem + applied playbook'lar), aksi halde eval üretim
         // reviewer'ından FARKLI bir prompt'la ölçer (karşılaştırma geçersizleşir).
+        // R22 (faz 4 T3): composeReviewerLessons — per-line 'yok.' filtresi (blok düşürme yok).
         const playbooks = loadAppliedPlaybooks(repoDir());
-        const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
+        const reviewerLessons = composeReviewerLessons([mem, playbooks]);
         stages.push(new LlmEnsembleStage(
           new LlmReviewerStage(gateway, reviewerLessons),
           new LlmReviewerAltStage(gateway, { model: altModelFor(effPolicy), reviewerLessons }), // I3: provider-aware alt model

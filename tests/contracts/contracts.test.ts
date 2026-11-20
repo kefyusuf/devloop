@@ -89,3 +89,22 @@ describe('faz 2 kontratları', () => {
     expect(bad.success).toBe(false);
   });
 });
+
+// R22 (faz 4 T3): EvalRun çapraz değişken invariant — passed + failed goldenCount ile toplamı
+// eşleşmeli (perTask.length = goldenCount sözleşmesinin şema düzeyinde zorlanması).
+describe('EvalRun invariant (R22 superRefine)', () => {
+  const env = () => makeEnvelope('r', 't', 'o');
+  it('passed + failed === goldenCount → kabul', () => {
+    const ok = DevloopEventSchema.safeParse({ ...env(), type: 'EvalRun', payload: {
+      evalId: 'e1', goldenCount: 2, passed: 1, failed: 1, score: 50, invalid: [], perTask: [], configSnapshot: {},
+    } });
+    expect(ok.success).toBe(true);
+  });
+  it('passed + failed !== goldenCount → reddedilir (custom mesaj)', () => {
+    const bad = DevloopEventSchema.safeParse({ ...env(), type: 'EvalRun', payload: {
+      evalId: 'e1', goldenCount: 3, passed: 1, failed: 1, score: 50, invalid: [], perTask: [], configSnapshot: {},
+    } });
+    expect(bad.success).toBe(false);
+    if (!bad.success) expect(bad.error.issues[0].message).toBe('passed + failed goldenCount ile toplamı eşleşmeli');
+  });
+});

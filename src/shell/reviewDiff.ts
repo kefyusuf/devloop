@@ -41,8 +41,11 @@ export function parseDiff(diff: string): Array<{ path: string; addedContent: str
   let state: State = 'EXPECT_FILE_HEADER';
   let pendingFrom: State = 'EXPECT_FILE_HEADER'; // onaysız başlıkta dönülecek kaynak durum
   // Regex'ler trim'siz, satır başına çapalı — trim tabanlı eşleşme yukarıdaki tuzağın ta kendisiydi.
-  const reDel = /^--- (?:a\/(.+)|\/dev\/null)$/; // başlık adayı (yalnız onay çiftiyle kapsam açar)
-  const reAdd = /^\+\+\+ b\/(.+)$/;              // onay satırı
+  // R22 (faz 4 T3): header regex'leri trailing whitespace toleranslı (`[ \t]*$`) — malformed
+  // diff'lerdeki `--- a/x.ts ` / `+++ b/x.ts ` satırları başlık sayılır; yol duyarlılığı korunur
+  // (trailing boşluk yola sızmaz). CRLF zaten satır bazında `\r` strip'iyle işlenir.
+  const reDel = /^--- (?:a\/(.+?)[ \t]*|\/dev\/null)$/; // başlık adayı (yalnız onay çiftiyle kapsam açar)
+  const reAdd = /^\+\+\+ b\/(.+?)[ \t]*$/;              // onay satırı
   const reDevNull = /^\+\+\+ \/dev\/null$/;      // silinen dosya: yol yok
   const open = (path: string): void => { current = path; out.set(path, out.get(path) ?? []); };
   for (const raw of diff.split('\n')) {

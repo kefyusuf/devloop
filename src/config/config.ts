@@ -39,6 +39,10 @@ const Policy = z.object({
   }).default({ mode: 'host', image: 'node:20-bookworm-slim' }),
   risk: z.object({ weights: Weights }),
   llm: Llm,
+// R22 (faz 4 T3): çapraz değişken invariant — mutationScopeLow mutationScopeHigh'dan küçük olmalı
+// (mutation stage low-risk'te Low, yüksek riskte High kullanır; eşit/ters aralık geçersiz politikadır).
+}).superRefine((p, ctx) => {
+  if (p.mutationScopeLow >= p.mutationScopeHigh) ctx.addIssue({ code: 'custom', message: "mutationScopeLow mutationScopeHigh'dan küçük olmalı" });
 });
 export type Policy = z.infer<typeof Policy>;
 
