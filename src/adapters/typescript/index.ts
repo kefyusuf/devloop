@@ -30,7 +30,7 @@ export function classifyRejection(e: Rejection): 'fatal' | 'nonzero' {
   return 'nonzero';
 }
 
-interface ToolOutput { stdout: string; stderr: string; exitedCleanly: boolean; killed: boolean; truncated: boolean }
+export interface ToolOutput { stdout: string; stderr: string; exitedCleanly: boolean; killed: boolean; truncated: boolean }
 
 /**
  * Araç koşumu üç yolla sonuçlanır:
@@ -62,6 +62,27 @@ export async function spawnTool(cmd: string, toolArgs: string[], repoPath: strin
 /** R13 öncesi imza korunur (mutationStage ve mevcut testler host modda bu yolu kullanır). */
 export async function runTool(repoPath: string, bin: string, args: string[], timeoutMs: number = SPAWN.timeout): Promise<ToolOutput> {
   return spawnTool(process.execPath, [bin, ...args], repoPath, timeoutMs);
+}
+
+/**
+ * R20 (faz 4 T5): sandbox-moduna duyarlı genel araç koşumu — mutation gate'in stryker spawn'ı
+ * bu tek kapıdan geçer (dockerizeSpawn erişimi TypeScriptAdapter örneğine bağlı değildir).
+ * - docker mod: dockerizeSpawn (worktree mount + orijinal node_modules :ro çift mount,
+ *   --network none, konteyner içi `npx <pkg> ...` — bin resolve ATLANIR) + spawnTool.
+ * - host mod: resolveBin (pkg → bilinen alt yol haritası; bilinmeyen pkg aynen denenir)
+ *   + runTool (process.execPath) — mevcut davranış.
+ * A6 sınıflandırma (spawnTool) iki modda aynıdır; originalRepoPath verilmediyse docker modda
+ * node_modules bind YOK (npx fail-closed error — dokümante davranış, sessiz host-fallback yok).
+ */
+const PKG_SUBPATH: Record<string, string> = { stryker: '@stryker-mutator/core/bin/stryker.js' };
+export async function runToolDockerAware(repoPath: string, originalRepoPath: string | undefined, policy: Policy, pkg: string, args: string[], timeoutMs?: number): Promise<ToolOutput> {
+  if (policy.sandbox.mode === 'docker') {
+    const sp = dockerizeSpawn({ repoPath, originalRepoPath, policy, bin: '', toolArgs: [pkg, ...args] });
+    return spawnTool(sp.cmd, sp.args, repoPath, timeoutMs ?? SPAWN.timeout);
+  }
+  const bin = resolveBin(repoPath, PKG_SUBPATH[pkg] ?? pkg);
+  if (!bin) throw new Error(`${pkg} çözümlenemedi (fail-closed)`);
+  return runTool(repoPath, bin, args, timeoutMs ?? SPAWN.timeout);
 }
 
 /**

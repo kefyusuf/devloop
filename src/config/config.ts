@@ -6,6 +6,9 @@ import { parse } from 'yaml';
 const Weights = z.object({ diffSize: z.number(), testDiff: z.number(), scopePaths: z.number() });
 const Llm = z.object({
   provider: z.enum(['anthropic', 'openai']).default('anthropic'),
+  // R21 (faz 4 T6): cross-provider fallback — true iken createGateways DİĞER sağlayıcı ayağını
+  // (anahtarı env'de mevcutsa) zincire ekler; false (varsayılan) → yalnız birincil ayak.
+  crossProviderFallback: z.boolean().default(false),
   model: z.string(), fallbackModel: z.string(),
   maxTokens: z.number().int().positive(),
   backoffMs: z.number().min(0).default(500),
@@ -39,6 +42,10 @@ const Policy = z.object({
   }).default({ mode: 'host', image: 'node:20-bookworm-slim' }),
   risk: z.object({ weights: Weights }),
   llm: Llm,
+// R22 (faz 4 T3): çapraz değişken invariant — mutationScopeLow mutationScopeHigh'dan küçük olmalı
+// (mutation stage low-risk'te Low, yüksek riskte High kullanır; eşit/ters aralık geçersiz politikadır).
+}).superRefine((p, ctx) => {
+  if (p.mutationScopeLow >= p.mutationScopeHigh) ctx.addIssue({ code: 'custom', message: "mutationScopeLow mutationScopeHigh'dan küçük olmalı" });
 });
 export type Policy = z.infer<typeof Policy>;
 
@@ -53,7 +60,7 @@ const DEFAULT_POLICY: Policy = {
   l3MinGoldenTasks: 50, ciEnsembleRiskThreshold: 20, mutationScopeLow: 5, mutationScopeHigh: 10,
   sandbox: { mode: 'host', image: 'node:20-bookworm-slim' },
   risk: { weights: { diffSize: 0.3, testDiff: 0.5, scopePaths: 0.2 } },
-  llm: { provider: 'anthropic', model: 'claude-sonnet-4-5', fallbackModel: 'claude-haiku-3-5',
+  llm: { provider: 'anthropic', crossProviderFallback: false, model: 'claude-sonnet-4-5', fallbackModel: 'claude-haiku-3-5',
     maxTokens: 8192, backoffMs: 500, costPer1kInput: 0.003, costPer1kOutput: 0.015,
     openai: { model: 'gpt-4.1', fallbackModel: 'gpt-4.1-mini', maxTokens: 8192, costPer1kInput: 0.0025, costPer1kOutput: 0.01 } },
 };

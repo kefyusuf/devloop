@@ -21,6 +21,7 @@ risk:
   weights: { diffSize: 0.3, testDiff: 0.5, scopePaths: 0.2 }
 llm:
   provider: anthropic
+  crossProviderFallback: false   # R21 (faz 4 T6): true + diğer sağlayıcı anahtarı env'de mevcutsa → gateway zinciri cross-provider fallback kurar
   model: claude-sonnet-4-5
   fallbackModel: claude-haiku-3-5
   maxTokens: 8192

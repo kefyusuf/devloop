@@ -226,7 +226,8 @@ devloop evolve apply <evoId>    # adayı golden-gerileme kapısıyla playbook st
   **hedef repoun kendi toolchain'i** mount edilen node_modules'tan gelir.
 - Gereksinimler: Docker daemon erişimi + hedef repoda toolchain (node_modules). Docker yoksa koşum
   **run-level abort** ile açık mesajla durur (sessiz host-run yok). Mutation gate'in konteyner koşumu
-  (containment) faz 3.1'e ertelendi: docker modda mutation gate fail-closed error verir.
+  faz 4'te genişletildi (R20 — bkz. Faz 4): docker modda mutation gate artık konteynerde koşar,
+  node_modules `:ro` bind edilir.
 - `sandbox.mode: host` (varsayılan) mevcut davranıştır.
 
 ### Faz 3 policy alanları
@@ -246,5 +247,88 @@ devloop evolve apply <evoId>    # adayı golden-gerileme kapısıyla playbook st
 
 Tümü `.default()` ile geldiğinden mevcut `policy.yaml` dosyaları geriye dönük uyumludur; policy
 değişiklikleri insan-onaylı review'e tabidir (§5.2.2).
+
+## Faz 4
+
+### Golden veri yolu — draft/list/accept/discard (R17)
+
+```bash
+devloop golden draft [--from-run <runId>]   # kabul edilmiş koşum kanıtından taslak üretimi
+devloop golden list                         # staging taslaklarını listeler
+devloop golden accept <draftId>             # İNSAN ONAYI → staging → golden/ rename
+devloop golden discard <draftId>            # taslağı at
+```
+
+- **İnsan küratörlüğü ilkesi (A5):** `draft` YALNIZ `.devloop/golden-drafts/` staging dizinine yazar;
+  `.devloop/golden/` dizinine yalnız `accept` (rename) dokunur — otomatik golden büyümesi kapalıdır.
+  `discard` yalnız staging dosyasını siler; golden/'daki kabul edilmiş görevler etkilenmez.
+- Taslak içeriği koşum kanıtından türetilir (LLM'siz): `gatesPass: true` sabittir (PRCreated yalnız
+  gates pass sonrası açılır); `real-issue-accepted` kararlarının bulgu kategorileri
+  `requiredFindings`'e, `false-positive` retlerin bulgu kategorileri `forbiddenCategories`'e düşer;
+  `fixtureDiff`, kabul edilen artifact diff'inin birebir kopyasıdır. `goldenId` deterministiktir
+  (sha256(taskSpec + diff)) — aynı koşum yeniden draft edilirse aynı ID staging'e döner.
+- Zaten kabul edilmiş bir `draftId`'nin ikinci accept'i hata verir (duplicate red).
+- Bu veri yolu eval/L3'ü besler: golden set `l3MinGoldenTasks` eşiğine buradan büyür (L3 veri yolu).
+
+### Generator playbook bağlamı (R18)
+
+- `evolve apply` ile staging'e yazılan playbook'lar ÇİFT bağlama girer: `playbook-reviewer` adayları
+  reviewer prompt'una (ana + alt reviewer), `playbook-generator` adayları generator bağlamına
+  (`generatorContext()`; `- <başlık> — <not>` satırları). Apply edilmemiş adaylar (candidates/)
+  prompt'lara girmez; staging (`.devloop/playbooks`) tek kaynaktır.
+- Kompozisyon satır bazlıdır (`composeReviewerLessons`, R22): 'yok.' bildirimi içeren satırlar
+  atılır, gerçek ders satırları korunur — tek kaynaktaki boş bildirim diğer kaynağın derslerini
+  blok-düşürmez (per-line filtre). Bozuk playbook dosyaları fail-soft atılır.
+
+### Evolve --llm: eval + insan kapılı LLM mutasyonları (R19)
+
+```bash
+devloop evolve --shadow            # deterministik aday üretimi + shadow eval (varsayılan mod)
+devloop evolve --shadow --llm      # shadow sonrası LLM üretimli playbook mutasyon TASLAKLARI
+devloop evolve apply <evoId>       # insan onayıyla golden-gerileme kapısından staging'e yaz
+```
+
+- `--llm` verilmezse davranış aynen deterministiktir — mutasyon gateway çağrısı hiç yapılmaz
+  (deterministik mod default).
+- `--llm` iki kapıdan geçer: (1) l3Active — golden set `l3MinGoldenTasks` eşiği altındaysa LLM
+  üretimi yapılmaz; (2) golden-gerileme — shadow eval baseline'dan daha çok golden görev kırmışsa
+  taslak üretimi reddedilir. Taslaklar deterministik adaylarla AYNI yerde staging edilir
+  (candidates/) ve insan onayı olmadan uygulanmaz; her taslak tek gateway çağrısı harcar.
+- Anahtarsız ortamda `--llm` fail-closed: GatewayError yakalanır, anlamlı mesaj stderr'e yazılır ve
+  exit kodu 1 olur — deterministik sonuç JSON'u stdout'ta aynen kalır (parse edilebilir).
+- Prompt sinyalleri kendini beslemez: shadow/eval koşum kanıtları verdict pattern'lerine girmez
+  (self-noise koruması); taslak evoId deterministiktir (kind:title:content + baseline evalId seed'i).
+
+### Sandbox mutation genişletmesi (R20)
+
+- `sandbox.mode: docker` seçilirse mutation gate de artık konteynerde koşar: Stryker
+  `runToolDockerAware` ile `docker run --rm -v <worktree>:/workspace … --network none <image>
+  npx stryker …` olarak hedef reponun KENDİ toolchain'iyle koşar (faz 3.1 fail-closed guard'ı
+  kaldırıldı; Docker-yok abortu aktivasyon kapısında aynen sürer — sessiz host-run yok).
+- Orijinal reponun `node_modules`'u konteynere **read-only (`:ro`)** bind edilir — bağımlılık ağacı
+  konteynerden yazılamaz; node_modules yalnız çözümleme kaynağıdır. Mutation raporu (mutation.json)
+  worktree mount'undan host yolunda okunur.
+
+### Cross-provider fallback (R21)
+
+- `llm.crossProviderFallback: true` seçilirse gateway ayak listesi kurulur: birincil provider önce,
+  DİĞER sağlayıcı ikinci ayak. Her ayak anahtar-durum filtresinden geçer (anthropic →
+  `ANTHROPIC_API_KEY`, openai → `OPENAI_API_KEY`); anahtarsız ayak atlanır, hiç ayak kurulamazsa
+  GatewayError fırlatır (fail-closed).
+- Ayaklar sırayla denenir; ilk başarılı yanıt döner; tüm ayaklar başarısızsa tek GatewayError çıkar
+  (son-neden mesajı tüm ayakların hatalarını içerir).
+- Zincir YALNIZ config açıkken kurulur (`false` varsayılan — davranış değişmez) ve yine
+  `BudgetedGateway` ile sarmalanır: bütçe tek kapıdır, cross-fallback yalnız config açıkken maliyet
+  doğurur.
+
+### Faz 4 policy alanları
+
+| Alan | Varsayılan | Anlamı |
+| --- | --- | --- |
+| `llm.crossProviderFallback` | `false` | `true` → diğer sağlayıcı ayağı gateway zincirine eklenir (anahtarı env'de mevcutsa); `false` → yalnız birincil ayak |
+
+Tek policy eklemesi budur; diğer faz 4 kalemleri mevcut alanları kullanır. Tümü `.default()` ile
+geldiğinden mevcut `policy.yaml` dosyaları geriye dönük uyumludur; policy değişiklikleri
+insan-onaylı review'e tabidir (§5.2.2).
 
 Detaylı tasarım: `docs/superpowers/specs/2026-11-18-ai-dev-loop-design.md`

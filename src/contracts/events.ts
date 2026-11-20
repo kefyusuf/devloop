@@ -32,6 +32,11 @@ const P = {
     // eval harness için zayıf sinyal). `.default([])`: eski store satırları (alan yok) okunabilir kalır.
     invalid: z.array(z.string()).default([]),
     configSnapshot: z.record(z.unknown()), comparedTo: z.string().optional(),
+  // R22 (faz 4 T3): çapraz değişken invariant — passed + failed goldenCount ile toplamı eşleşmeli
+  // (perTask.length = goldenCount sözleşmesinin şema düzeyinde zorlanması; yazım katı parse, okuma
+  // safeParse olduğu için tutarsız eski satırlar da okuma anında elenir).
+  }).superRefine((e, ctx) => {
+    if (e.passed + e.failed !== e.goldenCount) ctx.addIssue({ code: 'custom', message: 'passed + failed goldenCount ile toplamı eşleşmeli' });
   }),
   ProposalCreated: z.object({
     // R10 (faz 3 T4): L3 evrim kindleri — playbook-reviewer/playbook-generator (playbook-only

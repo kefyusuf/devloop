@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildCli } from '../../src/shell/cli.js';
 import { VerdictStore } from '../../src/store/store.js';
 import { generateProposals } from '../../src/learning/learn.js';
+import { loadGoldenTasks } from '../../src/eval/golden.js';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -217,5 +218,50 @@ describe('CLI', () => {
     expect(out.join('\n')).toContain('evo-cli2');
     expect(store.query({ type: 'ProposalCreated' })).toHaveLength(1);
     expect(existsSync(join(dir, '.devloop', 'playbooks', 'evo-cli2.json'))).toBe(true);
+  });
+
+  // R17 (faz 4 T1): golden küratörlük CLI — draft → list → accept → discard akışı.
+  // A5 değişmezi: üretim yalnız .devloop/golden-drafts/ staging'ine yazar; golden/ dizinine
+  // yalnız accept (rename) dokunur.
+  it('golden draft/list/accept/discard: kabul koşumdan taslak üretir, staging→golden taşınır', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-golden-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await store.append('RunStarted', 'r1', '-', 'o', { configSnapshot: {} });
+    const picked = await store.append('TaskPicked', 'r1', 't1', 'o', { taskSpec: { id: 't1', description: 'toplama ekle', acceptanceCriteria: ['sum(2,3)===5'], filesScope: [] } });
+    const art = await store.append('ArtifactProduced', 'r1', 't1', 'b', { artifact: { diff: '--- a/src/math.ts\n+++ b/src/math.ts\n@@ -1 +1,2 @@\n const x=1;\n+export const sum=(a:number,b:number)=>a+b;', intent: 'sum eklendi', rejectedAlternatives: [], testEvidence: 'vitest 3 passed', files: [] }, parentTaskEventId: picked.event_id });
+    await store.append('PRCreated', 'r1', 't1', 'o', { url: 'https://pr/x', title: 't1', commitSha: null, diffDigest: 'd' });
+    const f = await store.append('FindingEmitted', 'r1', 't1', 'llm-ensemble', { finding: { id: 'f1', stage: 'llm-ensemble', category: 'lint', severity: 'required', confidence: 0.9, evidence: { file: 'src/math.ts', line: 2 }, corroborated: false }, parentArtifactEventId: art.event_id });
+    await store.append('HumanDecision', 'r1', 't1', 'h', { decision: 'accept', reason: 'real-issue-accepted', parentFindingEventIds: [f.event_id] });
+
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    try {
+      // draft: taslak staging'e yazılır, golden/ YOK
+      await buildCli(dir).parseAsync(['node', 'devloop', 'golden', 'draft']);
+      const r = JSON.parse(out.join('\n'));
+      expect(r.drafts).toHaveLength(1);
+      expect(r.written).toBe(1);
+      const id = r.drafts[0].goldenId;
+      expect(existsSync(join(dir, '.devloop', 'golden-drafts', `${id}.task.json`))).toBe(true);
+      expect(existsSync(join(dir, '.devloop', 'golden'))).toBe(false);
+      // list: taslak listelenir
+      out.length = 0;
+      await buildCli(dir).parseAsync(['node', 'devloop', 'golden', 'list']);
+      expect(out.join('\n')).toContain(`${id}.task.json`);
+      // accept: staging → golden/ rename; loadGoldenTasks görür
+      out.length = 0;
+      await buildCli(dir).parseAsync(['node', 'devloop', 'golden', 'accept', id]);
+      expect(existsSync(join(dir, '.devloop', 'golden', `${id}.task.json`))).toBe(true);
+      expect(existsSync(join(dir, '.devloop', 'golden-drafts', `${id}.task.json`))).toBe(false);
+      expect(loadGoldenTasks(dir).tasks).toHaveLength(1);
+      // discard: yeniden üretilen taslak atılır; kabul edilen golden'a dokunulmaz
+      out.length = 0;
+      await buildCli(dir).parseAsync(['node', 'devloop', 'golden', 'draft']);
+      expect(JSON.parse(out.join('\n')).written).toBe(1); // staging boşaldı → yeniden yazıldı
+      out.length = 0;
+      await buildCli(dir).parseAsync(['node', 'devloop', 'golden', 'discard', id]);
+      expect(existsSync(join(dir, '.devloop', 'golden-drafts', `${id}.task.json`))).toBe(false);
+      expect(existsSync(join(dir, '.devloop', 'golden', `${id}.task.json`))).toBe(true);
+    } finally { console.log = origLog; }
   });
 });

@@ -4,30 +4,38 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import * as adapter from '../../src/adapters/typescript/index.js';
-import { MutationStage, parseMutationScore, survivedInTouchedFiles } from '../../src/pipeline/stages/mutationStage.js';
+import { MutationStage, parseMutationScore, survivedInTouchedFiles, type MutationRunner, type MutationRunnerDesc } from '../../src/pipeline/stages/mutationStage.js';
 import { ReviewPipeline } from '../../src/pipeline/pipeline.js';
 import { loadConfig, type Policy } from '../../src/config/config.js';
 import type { ReviewContext } from '../../src/contracts/review.js';
 
-// Adapter modülü mock'lanır: birim testlerde resolveBin/runTool kontrol edilir; mock ayarlanmadığında
-// GERÇEK implementasyona geçilir (gerçek Stryker koşum testi bununla çalışır). Orijinal fonksiyonlar
-// fabrikada BİR KEZ yakalanır — passthrough mock'un kendisine değil, gerçeğe devretmesi için.
+// Adapter modülü mock'lanır: birim testlerde resolveBin/runTool (host yol) ve runToolDockerAware
+// (docker devri) kontrol edilir; mock ayarlanmadığında GERÇEK implementasyona geçilir (gerçek
+// Stryker koşum testi bununla çalışır). Orijinal fonksiyonlar fabrikada BİR KEZ yakalanır —
+// passthrough mock'un kendisine değil, gerçeğe devretmesi için.
 // vi.hoisted: vi.mock fabrikası dosyanın en üstüne çekilir; holder fabrikadan ÖNCE hazır olmalı.
-type ActualImpls = { resolveBin?: (repoPath: string, subpath: string) => string | null; runTool?: (...args: unknown[]) => unknown };
+type ActualImpls = {
+  resolveBin?: (repoPath: string, subpath: string) => string | null;
+  runTool?: (...args: unknown[]) => unknown;
+  runToolDockerAware?: (...args: unknown[]) => unknown;
+};
 const actualImpls = vi.hoisted(() => ({}) as ActualImpls);
 vi.mock('../../src/adapters/typescript/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/adapters/typescript/index.js')>();
   actualImpls.resolveBin = actual.resolveBin;
   actualImpls.runTool = actual.runTool as (...args: unknown[]) => unknown;
+  actualImpls.runToolDockerAware = actual.runToolDockerAware as unknown as (...args: unknown[]) => unknown;
   return {
     ...actual,
     resolveBin: vi.fn((repoPath: string, subpath: string) => actualImpls.resolveBin!(repoPath, subpath)),
     runTool: vi.fn(((...args: Parameters<typeof actual.runTool>) => actualImpls.runTool!(...args)) as typeof actual.runTool),
+    runToolDockerAware: vi.fn(((...args: unknown[]) => actualImpls.runToolDockerAware!(...args)) as unknown as typeof actual.runToolDockerAware),
   };
 });
 
 const resolveBinMock = vi.mocked(adapter.resolveBin);
 const runToolMock = vi.mocked(adapter.runTool);
+const dockerAwareMock = vi.mocked(adapter.runToolDockerAware);
 
 const policy = () => loadConfig(mkdtempSync(join(tmpdir(), 'pol-'))).policy; // DEFAULT_POLICY: eşik 60, timeout 15dk
 
@@ -51,11 +59,13 @@ beforeEach(() => {
   // Devretme yakalanan GERÇEK implementasyona — mock'a değil (sonsuz özyineleme olmasın).
   resolveBinMock.mockImplementation((repoPath: string, subpath: string) => actualImpls.resolveBin!(repoPath, subpath));
   runToolMock.mockImplementation(((...args: unknown[]) => actualImpls.runTool!(...args)) as typeof adapter.runTool);
+  dockerAwareMock.mockImplementation(((...args: unknown[]) => actualImpls.runToolDockerAware!(...args)) as unknown as typeof adapter.runToolDockerAware);
 });
 
 afterEach(() => {
   vi.mocked(adapter.resolveBin).mockReset();
   vi.mocked(adapter.runTool).mockReset();
+  dockerAwareMock.mockReset();
 });
 
 describe('MutationStage birim', () => {
@@ -66,25 +76,105 @@ describe('MutationStage birim', () => {
     expect(r.findings).toEqual([]);
   });
 
-  // I3 (fix round 1): docker sandbox containment faz 3.1'e ertelendi (ledger) — bu taskta guard
-  // LOUD olur: docker mod + stryker config → fail-closed throw → pipeline 'error' (sessiz
-  // host-run YOK; sandbox.mode=host kullanın mesajı açık).
-  it('docker mod + stryker config → fail-closed throw; pipeline status error (sessiz host-run yok)', async () => {
-    const dir = repoWithConfig();
-    const dp: Policy = { ...policy(), sandbox: { mode: 'docker', image: 'node:20-bookworm-slim' } };
-    const stage = new MutationStage(dp);
-    await expect(stage.evaluate(mkCtx(dir)))
-      .rejects.toThrow('Mutation gate docker sandbox henüz desteklenmiyor (faz 3.1) — sandbox.mode=host kullanın');
-    // docker mod + config YOK → hâlâ skipped (guard yalnız gerçekte koşulacak yerde devreye girer)
-    const empty = mkdtempSync(join(tmpdir(), 'mut-'));
-    expect((await new MutationStage(dp).evaluate(mkCtx(empty))).status).toBe('skipped');
-    // pipeline düzeyi: stage throw → status 'error' + errorMessage taşınır
-    const p = new ReviewPipeline([stage], { ...dp, gates: ['mutation-testing'], advisory: [] });
-    const r = await p.run(mkCtx(dir));
-    expect(r.verdicts[0].status).toBe('error');
-    expect(r.verdicts[0].errorMessage).toContain('faz 3.1');
-    expect(r.passed).toBe(false);
-    expect(runToolMock).not.toHaveBeenCalled(); // sessiz host-run kanıtı yok — spawn hiç başlamaz
+  // R20 (faz 4 T5): faz 3.1 fail-closed guard KALDIRILDI — docker modda stryker konteynerde
+  // dockerizeSpawn üzerinden koşar (worktree mount + orijinal node_modules :ro çift mount,
+  // --network none). Runner injectable: mock runner docker desc alır; mutation.json worktree
+  // mount'undan host yolu üzerinden (join(repoPath, 'reports', 'mutation', 'mutation.json')) okunur.
+  describe('docker mod (R20 — guard kaldırıldı, konteyner koşumu)', () => {
+    const dockerPolicy = (p: Policy): Policy => ({ ...p, sandbox: { mode: 'docker', image: 'node:20-bookworm-slim' } });
+
+    /** Stryker-in-container çıktısının worktree mount'unda belirmiş halini simüle eder (host yolu). */
+    const writeMutationReport = (dir: string): void => {
+      mkdirSync(join(dir, 'reports', 'mutation'), { recursive: true });
+      writeFileSync(join(dir, 'reports', 'mutation', 'mutation.json'), JSON.stringify({
+        schemaVersion: '1.0',
+        files: {
+          'src/a.ts': { language: 'typescript', source: '', mutants: [
+            { id: '9', mutatorName: 'ArithmeticOperator', replacement: 'a-b', status: 'Survived', static: false, testsCompleted: 1, coveredBy: ['0'], location: { end: { column: 20, line: 2 }, start: { column: 10, line: 2 } } },
+          ] },
+        },
+        thresholds: { high: 80, low: 60, break: 0 },
+        projectRoot: dir,
+      }));
+    };
+
+    it('docker mod + stryker config + mock runner → docker desc (pkg stryker + originalRepoPath); skor parse → fail + mutation.json survived bulgusu', async () => {
+      const dir = repoWithConfig();
+      const orig = mkdtempSync(join(tmpdir(), 'mutorig-'));
+      writeMutationReport(dir); // konteyner stryker json reporter çıktısı — host mount yolu
+      const seen: MutationRunnerDesc[] = [];
+      const mockRunner: MutationRunner = async (desc) => { seen.push(desc); return toolOut('mutation score 25.00%\nAll files |  25.00 |'); };
+      const dp = dockerPolicy(policy());
+      const stage = new MutationStage(dp, mockRunner, orig); // originalRepoPath fixture'a geçilir (node_modules :ro bind için)
+      const r = await stage.evaluate(mkCtx(dir, [{ path: 'src/a.ts', content: 'x' }]));
+      // docker desc: docker modu + stryker + çift-mount kaynağı runner'a taşınır
+      expect(seen).toHaveLength(1);
+      expect(seen[0].policy.sandbox.mode).toBe('docker');
+      expect(seen[0].repoPath).toBe(dir);
+      expect(seen[0].originalRepoPath).toBe(orig);
+      expect(seen[0].pkg).toBe('stryker');
+      expect(seen[0].args).toEqual(['run', '--mutate', 'src/a.ts', '--concurrency', '1', '--reporters', 'clear-text,json']);
+      expect(seen[0].timeoutMs).toBe(dp.mutationTimeoutMinutes * 60_000);
+      // skor parse: 25 < 60 → aggregate fail bulgusu
+      expect(r.status).toBe('fail');
+      const aggregate = r.findings.find((f) => f.evidence.file === '(mutation-report)');
+      expect(aggregate).toBeDefined();
+      expect(aggregate!.severity).toBe('critical');
+      // mutation.json host mount yolu üzerinden okundu → touched dosyada survived → per-mutant bulgu
+      const survived = r.findings.filter((f) => f.evidence.file !== '(mutation-report)');
+      expect(survived).toHaveLength(1);
+      expect(survived[0].evidence.file).toBe('src/a.ts');
+      expect(survived[0].evidence.line).toBe(2);
+      expect(survived[0].evidence.mutantId).toBe('9');
+      // sessiz host-run kanıtı yok — adapter host spawn yolu hiç devreye girmez (A6)
+      expect(runToolMock).not.toHaveBeenCalled();
+      expect(resolveBinMock).not.toHaveBeenCalled();
+    });
+
+    it('docker mod + skor ≥ eşik + survived yok → pass; pipeline hükmü pass (docker mod artık koşar, error değil)', async () => {
+      const dir = repoWithConfig();
+      const orig = mkdtempSync(join(tmpdir(), 'mutorig-'));
+      const mockRunner: MutationRunner = async () => toolOut('mutation score 90.00%\nAll files |  90.00 |');
+      const dp = dockerPolicy(policy());
+      const stage = new MutationStage(dp, mockRunner, orig);
+      const r = await stage.evaluate(mkCtx(dir, [{ path: 'src/a.ts', content: 'x' }]));
+      expect(r.status).toBe('pass');
+      expect(r.findings).toEqual([]);
+      // pipeline düzeyi: docker mod gate 'error' DEĞİL — pass hükmü taşınır (faz 3.1 kapanır)
+      const p = new ReviewPipeline([stage], { ...dp, gates: ['mutation-testing'], advisory: [] });
+      const pr = await p.run(mkCtx(dir, [{ path: 'src/a.ts', content: 'x' }]));
+      expect(pr.verdicts[0].status).toBe('pass');
+      expect(pr.passed).toBe(true);
+    });
+
+    it('docker mod + config YOK → skipped (koşulacak yerde davranış değişmez)', async () => {
+      const empty = mkdtempSync(join(tmpdir(), 'mut-'));
+      const dp = dockerPolicy(policy());
+      const stage = new MutationStage(dp, async () => toolOut('mutation score 90.00%'), mkdtempSync(join(tmpdir(), 'mutorig-')));
+      expect((await stage.evaluate(mkCtx(empty))).status).toBe('skipped');
+    });
+
+    // Gerçek spawn inşası hükmü: docker mod + DEFAULT runner → koşum runToolDockerAware'a devredilir
+    // (dockerizeSpawn + :ro çift mount orada kurulur — arg inşası sandbox.test.ts'de hükümlü);
+    // host yolu (resolveBin/runTool) DEĞİL — sessiz host-run yok.
+    it('docker mod + DEFAULT runner → runToolDockerAware devri (repoPath + originalRepoPath + pkg + args + timeout)', async () => {
+      const dir = repoWithConfig();
+      const orig = mkdtempSync(join(tmpdir(), 'mutorig-'));
+      const dp = dockerPolicy(policy());
+      dockerAwareMock.mockResolvedValueOnce(toolOut('mutation score 90.00%\nAll files |  90.00 |'));
+      const r = await new MutationStage(dp, undefined, orig).evaluate(mkCtx(dir, [{ path: 'src/a.ts', content: 'x' }]));
+      expect(r.status).toBe('pass');
+      expect(dockerAwareMock).toHaveBeenCalledOnce();
+      const [repo, origPath, pol, pkg, args, timeoutMs] = dockerAwareMock.mock.calls[0];
+      expect(repo).toBe(dir);
+      expect(origPath).toBe(orig);
+      expect(pol.sandbox.mode).toBe('docker');
+      expect(pkg).toBe('stryker');
+      expect(args).toEqual(['run', '--mutate', 'src/a.ts', '--concurrency', '1', '--reporters', 'clear-text,json']);
+      expect(timeoutMs).toBe(dp.mutationTimeoutMinutes * 60_000);
+      expect(resolveBinMock).not.toHaveBeenCalled(); // host spawn inşası yok
+      expect(runToolMock).not.toHaveBeenCalled();    // sessiz host-run yok
+    });
   });
 
   it('skor < eşik → fail + critical mutation bulgusu', async () => {

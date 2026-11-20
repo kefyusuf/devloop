@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ReviewPipeline } from '../pipeline/pipeline.js';
 import type { Policy } from '../config/config.js';
 import type { VerdictStore } from '../store/store.js';
@@ -39,7 +39,10 @@ export async function runEval(args: {
   candidate?: { label: string }; l3MinGoldenTasks: number;
 }): Promise<EvalSummary> {
   const { tasks, invalid } = loadGoldenTasks(args.repoPath);
-  const evalId = createHash('sha256').update(args.repoPath + tasks.length + invalid.join()).digest('hex').slice(0, 12) + '-' + Date.now();
+  // R22 (faz 4 T3): seed'e randomUUID — aynı repo + aynı golden setten arka arkaya iki koşum
+  // Date.now() aynı milisaniyeye düşerse evalId ÇAKIŞIRDI (hash girdisi aynıydı); UUID girdiye
+  // karışır, evalId (ve runId) her koşumda benzersiz.
+  const evalId = createHash('sha256').update(args.repoPath + tasks.length + invalid.join() + randomUUID()).digest('hex').slice(0, 12) + '-' + Date.now();
   const runId = `eval-${evalId}`;
   const configSnapshot = { ...(args.candidate ? { candidate: args.candidate.label } : { mode: 'production' }), policyHash: createHash('sha256').update(JSON.stringify(args.policy)).digest('hex').slice(0, 16) };
 

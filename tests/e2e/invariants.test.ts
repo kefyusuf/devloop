@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ReviewPipeline } from '../../src/pipeline/pipeline.js';
 import { Orchestrator, BudgetedGateway, type OrchestratorDeps } from '../../src/orchestrator/orchestrator.js';
 import { generateCandidates, generateProposals, applyProposal } from '../../src/learning/learn.js';
@@ -11,7 +11,14 @@ import { MutationStage } from '../../src/pipeline/stages/mutationStage.js';
 import { parseDiff, runReviewDiff } from '../../src/shell/reviewDiff.js';
 import { runEval } from '../../src/eval/evalRunner.js';
 import { generateEvolutionCandidates, applyEvolution, type EvolveContext } from '../../src/evolution/evolve.js';
-import { loadConfig } from '../../src/config/config.js';
+import { loadConfig, type Policy } from '../../src/config/config.js';
+import { createGateways, ChainedGateway } from '../../src/gateway/factory.js';
+import { AnthropicGateway, GatewayError } from '../../src/gateway/gateway.js';
+import { OpenAIGateway } from '../../src/gateway/openai.js';
+import { dockerizeSpawn } from '../../src/shell/sandbox.js';
+import { composeReviewerLessons } from '../../src/shell/composeLessons.js';
+import { DevloopEventSchema, makeEnvelope } from '../../src/contracts/events.js';
+import { z } from 'zod';
 import { mkdtempSync, readFileSync, mkdirSync, readdirSync, cpSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -364,9 +371,144 @@ describe('Faz 3 değişmezleri (R15)', () => {
   });
 });
 
+// Faz 4 değişmezleri (R23): her faz-4 kabul kriteri değişmez olarak burada pinlenir. T3/T5/T6
+// birimlerinin (evalId uniq, şema superRefine'lar, compose filtresi, :ro bind, cross-fallback)
+// değişmez versiyonları — davranış tek yerde tekrar pinlenir, birimler ayrıntıda kalır.
+describe('Faz 4 değişmezleri (R23)', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+
+  // (1) R21 cross-fallback matrisi — zincir davranışı YALNIZ config açıkken devreye girer; ayak
+  // kurulumu ANAHTAR-DURUM filtresinden geçer (env stub — gerçek API çağrısı yok, fetch mock).
+  const Schema = z.object({ answer: z.string() });
+  const anthropicResponse = (status = 200): Response => new Response(
+    JSON.stringify({ content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 100, output_tokens: 50 } }), { status });
+  const openaiResponse = (status = 200): Response => new Response(
+    JSON.stringify({ choices: [{ message: { content: '{"answer":"ok"}' } }], usage: { prompt_tokens: 100, completion_tokens: 50 } }), { status });
+  const fallbackPolicy: Policy = { ...base, llm: { ...base.llm, crossProviderFallback: true } };
+
+  it('cross-fallback matris: config true → iki ayak (anthropic 500 → openai ok); config false → tek ayak; anahtar-eksik ayak atlanır', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'k-a');
+    vi.stubEnv('OPENAI_API_KEY', 'k-o');
+
+    // config true: iki ayak (anthropic birincil + openai ikincil); anthropic HTTP 500 → zincir
+    // openai ayağına düşer ve başarılı yanıt döner (usage başarılı ayaktan).
+    const legsOn = createGateways(fallbackPolicy);
+    expect(legsOn).toHaveLength(2);
+    expect(legsOn[0]).toBeInstanceOf(AnthropicGateway);
+    expect(legsOn[1]).toBeInstanceOf(OpenAIGateway);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes('api.anthropic.com') ? anthropicResponse(500) : openaiResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    const r = await new ChainedGateway(createGateways(fallbackPolicy)).complete({ system: 's', user: 'q', schema: Schema, runId: 'r' });
+    expect(r.data.answer).toBe('ok');
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('api.anthropic.com'))).toBe(true);
+    expect(urls.some((u) => u.includes('api.openai.com'))).toBe(true);
+
+    // config false (iki anahtar da mevcut): TEK ayak — HTTP 500 → GatewayError, openai hiç denenmez.
+    const legsOff = createGateways({ ...base, llm: { ...base.llm, crossProviderFallback: false } });
+    expect(legsOff).toHaveLength(1);
+    expect(legsOff[0]).toBeInstanceOf(AnthropicGateway);
+    const fetchMockOff = vi.fn(async () => anthropicResponse(500));
+    vi.stubGlobal('fetch', fetchMockOff);
+    await expect(legsOff[0].complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
+    expect(fetchMockOff.mock.calls.every((c) => String(c[0]).includes('api.anthropic.com'))).toBe(true);
+
+    // anahtar-eksik ayak atlanır: OPENAI_API_KEY boş → cross=true olmasına rağmen tek ayak kurulur.
+    vi.stubEnv('OPENAI_API_KEY', '');
+    const legsKeyMissing = createGateways(fallbackPolicy);
+    expect(legsKeyMissing).toHaveLength(1);
+    expect(legsKeyMissing[0]).toBeInstanceOf(AnthropicGateway);
+  });
+
+  // (2) R20 docker :ro pin — node_modules bind READ-ONLY; worktree mount'u yazılabilir kalır.
+  it('docker :ro pin: node_modules bind ":ro" ile bağlanır — konteyner bağımlılık yazımı engelli', () => {
+    const dockerPolicy: Policy = { ...base, gates: ['static-gates'], advisory: [], sandbox: { mode: 'docker', image: 'node:20-bookworm-slim' } };
+    const r = dockerizeSpawn({ repoPath: '/repo/.devloop/worktrees/run1-t1', originalRepoPath: '/orig/repo', policy: dockerPolicy, bin: '', toolArgs: ['tsc'] });
+    expect(r.cmd).toBe('docker');
+    const bind = r.args.find((a) => a.includes(':/workspace/node_modules'));
+    expect(bind).toBeDefined();
+    expect(bind!.endsWith(':ro')).toBe(true);
+    expect(r.args).toContain('/repo/.devloop/worktrees/run1-t1:/workspace'); // worktree yazılabilir (sadece :ro node_modules'ta)
+    expect(r.args.filter((a) => a.endsWith(':ro'))).toHaveLength(1); // tek read-only bind
+  });
+
+  // (3) R22 per-line 'yok.' filtresi — blok düşürme yok: TEK kaynaktaki 'yok.' bildirimi diğer
+  // kaynağın gerçek ders satırlarını düşürmez (eski substring kompozisyonunun ihlali).
+  it('per-line filtre: yok. içeren satırlar atılır, diğer satırlar korunur (blok düşürme yok)', () => {
+    const out = composeReviewerLessons([
+      { reviewerContext: () => 'Reviewer dersi yok.\n- [reviewer] gerçek ders satırı' },
+      { reviewerContext: () => '- [playbook] playbook satırı\nReviewer playbook önerisi yok.' },
+    ]).reviewerContext();
+    expect(out.split('\n')).toEqual(['- [reviewer] gerçek ders satırı', '- [playbook] playbook satırı']);
+    expect(out).not.toContain('yok.');
+  });
+
+  // (4) R22 evalId uniq — seed randomUUID içerir: aynı repo+golden setten art arda iki koşum
+  // Date.now AYNI ms'ye düşse bile çarpışmaz (runIdEval çarpışması kanıt zincirini kirletirdi).
+  it('evalId uniq: aynı repo+golden set iki koşum → farklı evalId (aynı ms dahil)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'inv-f4eval-'));
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g0.task.json'), JSON.stringify({
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    }), 'utf8');
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const pipeline = { run: vi.fn(async () => ({ verdicts: [], findings: [], gateFailed: null, passed: true })) } as unknown as ReviewPipeline;
+    const args = { repoPath: dir, pipeline, policy: base, store, l3MinGoldenTasks: base.l3MinGoldenTasks };
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000); // aynı-ms çakışma simülasyonu
+    let r1: Awaited<ReturnType<typeof runEval>>;
+    let r2: Awaited<ReturnType<typeof runEval>>;
+    try { r1 = await runEval(args); r2 = await runEval(args); }
+    finally { nowSpy.mockRestore(); }
+    expect(r1.evalId).not.toBe(r2.evalId);
+    const ids = store.query({ type: 'EvalRun' })
+      .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun')
+      .map((e) => e.payload.evalId);
+    expect(new Set(ids).size).toBe(2); // kanıtta da çarpışma yok
+  });
+
+  // (5) R22 şema invariants — çapraz değişkenler şema düzeyinde: EvalRun toplam eşleşmezse
+  // yazım katı parse REDDeder (kanıt zincirine tutarsız EvalRun giremez); policy scopeLow ≥
+  // scopeHigh geçersiz politika (eşit dahil — < sınırı pin'li).
+  it('şema invariants: EvalRun passed+failed≠goldenCount reddi; policy scopeLow≥High reddi', async () => {
+    const env = () => ({ ...makeEnvelope('r', 't', 'o'), type: 'EvalRun' as const });
+    const good = DevloopEventSchema.safeParse({ ...env(), payload: { evalId: 'e1', goldenCount: 2, passed: 1, failed: 1, score: 50, invalid: [], perTask: [], configSnapshot: {} } });
+    expect(good.success).toBe(true); // geçerli toplam kabul (non-vacuous her iki yön)
+    const bad = DevloopEventSchema.safeParse({ ...env(), payload: { evalId: 'e1', goldenCount: 3, passed: 1, failed: 1, score: 50, invalid: [], perTask: [], configSnapshot: {} } });
+    expect(bad.success).toBe(false);
+    if (!bad.success) expect(bad.error.issues[0].message).toBe('passed + failed goldenCount ile toplamı eşleşmeli');
+    const store = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'inv-f4sch-')), 'e.jsonl'));
+    await expect(store.append('EvalRun', 'r', '-', 'eval', { evalId: 'e1', goldenCount: 3, passed: 1, failed: 1, score: 50, invalid: [], perTask: [], configSnapshot: {} }))
+      .rejects.toThrow('passed + failed goldenCount ile toplamı eşleşmeli');
+
+    const mkPolicyDir = (low: number, high: number): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'inv-f4pol-'));
+      writeFileSync(join(dir, 'policy.yaml'), `version: 1
+gates: [static-gates]
+advisory: []
+maxFixTours: 2
+maxIterations: 5
+budgetUsd: 1.0
+wallClockMinutes: 10
+mutationScopeLow: ${low}
+mutationScopeHigh: ${high}
+risk: { weights: { diffSize: 0.3, testDiff: 0.5, scopePaths: 0.2 } }
+llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costPer1kInput: 0.001, costPer1kOutput: 0.002 }
+`, 'utf8');
+      return dir;
+    };
+    expect(() => loadConfig(mkPolicyDir(10, 5))).toThrow(/mutationScopeLow/);   // ters aralık reddi
+    expect(() => loadConfig(mkPolicyDir(10, 10))).toThrow(/mutationScopeLow/); // eşit de reddedilir (< sınırı)
+    expect(loadConfig(mkPolicyDir(3, 7)).policy.mutationScopeLow).toBe(3);     // geçerli aralık kabul
+  });
+});
+
 // Düzeltme 9 (opsiyonel — dahil edildi): README/CLI fiil hizası koruması; ucuz, gürültü değil.
 describe('README hizası', () => {
-  it('README, CLI fiilleriyle hizalı (run/decide/learn/status + faz 3: eval/evolve)', () => {
+  it('README, CLI fiilleriyle hizalı (run/decide/learn/status + faz 3: eval/evolve + faz 4: golden/evolve --llm)', () => {
     const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
     expect(readme).toContain('run tasks.json');
     expect(readme).toContain('devloop decide');
@@ -375,5 +517,9 @@ describe('README hizası', () => {
     // R15 (faz 3 T9): faz 3 komutları da README'de belgelenir
     expect(readme).toContain('devloop eval');
     expect(readme).toContain('devloop evolve');
+    // R23 (faz 4 T7): faz 4 küratörlük fiilleri + --llm bayrağı da belgelenir
+    expect(readme).toContain('devloop golden');
+    expect(readme).toContain('--llm');
+    expect(readme).toContain('crossProviderFallback');
   });
 });

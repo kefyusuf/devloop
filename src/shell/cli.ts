@@ -1,21 +1,23 @@
 import { Command } from 'commander';
 import { join, resolve } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { loadConfig, type Policy } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
-import { createGateway, altModelFor } from '../gateway/factory.js';
+import { createGateways, ChainedGateway, altModelFor } from '../gateway/factory.js';
 import { LlmGeneratorBackend } from '../generator/generator.js';
 import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
 import {
   generateEvolutionCandidates, writeShadowCandidates, applyEvolution, loadCandidate, candidatePlaybookProvider,
-  loadAppliedPlaybooks, type EvolveContext,
+  loadAppliedPlaybooks, generateLlmMutations, type EvolveContext, type EvolutionCandidate, type LlmMutationDraft,
 } from '../evolution/evolve.js';
 import { runEval, type EvalSummary } from '../eval/evalRunner.js';
 import { loadGoldenTasks } from '../eval/golden.js';
+import { generateGoldenDrafts, acceptDraft, discardDraft } from '../golden/draft.js';
 import { Orchestrator, BudgetedGateway } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
 import { runReviewDiff } from './reviewDiff.js';
+import { composeReviewerLessons } from './composeLessons.js'; // R22 (faz 4 T3): per-line 'yok.' filtresi — 3 site tek helper
 import { ReviewPipeline } from '../pipeline/pipeline.js';
 import type { ReviewStage } from '../contracts/review.js';
 import type { DevloopEvent, EventPayloadMap } from '../contracts/events.js';
@@ -65,7 +67,10 @@ export function buildCli(workDir = process.cwd()): Command {
     // I1 (final review): bütçe TEK KAPI — BudgetedGateway CLI'da kurulur ve backend, reviewer
     // stage ve deps.gateway'a AYNI örnek geçilir. Böylece gerçek harcayan her çağrı bütçe sayacına
     // düşer; orchestrator içi ayrı sarmalama/canary çağrısı yoktur (kaldırıldı).
-    const gateway = new BudgetedGateway(createGateway(policy), policy.budgetUsd, () => {});
+    // R21 (faz 4 T6): cross-provider fallback — chain (tek ayakta düz gateway); BudgetedGateway
+    // sarması aynen ve TÜM chain'i kapsar (A6: her ayak harcaması budget'a işler).
+    const gateways = createGateways(policy);
+    const gateway = new BudgetedGateway(gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways), policy.budgetUsd, () => {});
     // R13: adapter policy alır — sandbox.mode docker ise lint/typecheck/tests koşumları konteynere
     // sarılır (dockerizeSpawn); host modda davranış değişmez. I2: originalRepoPath (deps.repoPath)
     // — docker modda orijinal repo node_modules'u /workspace/node_modules'a bind edilir.
@@ -74,10 +79,11 @@ export function buildCli(workDir = process.cwd()): Command {
     // performans rubriği, fallbackModel override) yalnız primary bulgulu veya risk ≥ eşikte koşar.
     // Bu kayıt, policy advisory [llm-ensemble, ...] ile PipelineConfigError penceresini kapatır.
     // I2 (final fix wave): reviewerLessons ARTIK KOMPOZE — aktif reviewer dersleri (mem) + apply
-    // edilmiş playbook'lar (loadAppliedPlaybooks: .devloop/playbooks staging'i) aynı prompt'a girer;
-    // iki kaynağın 'yok.' bildirimleri filtrelenir (boş kaynak prompt'a kirlilik taşımaz).
+    // edilmiş playbook'lar (loadAppliedPlaybooks: .devloop/playbooks staging'i) aynı prompt'a girer.
+    // R22 (faz 4 T3): kompozisyon composeReviewerLessons helper'ına taşındı — 'yok.' filtresi
+    // SATIR bazlıdır (blok düşürme yok: tek kaynağın 'yok.' bildirimi diğerinin satırlarını düşürmez).
     const playbooks = loadAppliedPlaybooks(repoDir());
-    const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
+    const reviewerLessons = composeReviewerLessons([mem, playbooks]);
     const ensemble = new LlmEnsembleStage(
       new LlmReviewerStage(gateway, reviewerLessons), // A4: reviewer dersleri + I2 applied playbook'lar
       // I3: alt model provider-aware (anthropic/openai) — hardcode anthropic fallbackModel yerine
@@ -86,12 +92,19 @@ export function buildCli(workDir = process.cwd()): Command {
     );
     const pipeline = new ReviewPipeline([
       new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-      new SecretScanStage(), new MutationStage(policy),
+      // R20 (faz 4 T5): mutation gate docker modda konteynerde koşar (faz 3.1 guard'ı kalktı);
+      // originalRepoPath — dockerizeSpawn node_modules :ro çift mount kaynağı (adapter wiring'iyle aynı).
+      new SecretScanStage(), new MutationStage(policy, undefined, repoDir()),
       ensemble,
     ], policy);
     const orchestrator = new Orchestrator({
       store: s,
-      backend: new LlmGeneratorBackend(gateway, mem), // A4: generator dersleri buraya
+      // R18 (faz 4 T2): 3. param — applied playbook-generator staging'i generator prompt'una girer
+      // (loadAppliedPlaybooks çift bağlam: reviewerContext I2 kompozisyonunda, generatorContext burada).
+      // Yalnız üretim yolu (`run`) taşır; evolve --shadow candidatePlaybookProvider ile sınırlı kalır
+      // (faz 3 hükmü aynen — applied playbooklar shadow yargısına karışmaz), review-diff/eval --full
+      // üretim yapan generator kurmaz (reviewerLessons I2 kompozisyonu zaten applied playbook'ludur).
+      backend: new LlmGeneratorBackend(gateway, mem, loadAppliedPlaybooks(repoDir())), // A4: generator dersleri + R18 applied generator playbook'ları
       pipeline, gateway, policy, repoPath: repoDir(), pr: new PrReporter(repoDir()),
     });
     // §7.3 acil durdurma: SIGINT → kill marker dosyası; abort orchestrator'ın mevcut
@@ -206,7 +219,9 @@ export function buildCli(workDir = process.cwd()): Command {
       const { policy } = loadConfig(repoDir());
       const diffText = opts.diff === '-' ? readFileSync(0, 'utf8') : readFileSync(opts.diff, 'utf8');
       const mem = memory();
-      const gateway = new BudgetedGateway(createGateway(policy), policy.budgetUsd, () => {});
+      // R21 (faz 4 T6): cross-provider fallback chain — BudgetedGateway sarması aynen (tüm chain budget'a işler).
+      const gateways = createGateways(policy);
+      const gateway = new BudgetedGateway(gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways), policy.budgetUsd, () => {});
       const adapter = new TypeScriptAdapter(policy, repoDir()); // R13 + I2: docker modda wt mount + orijinal node_modules bind
       // R11 (faz 3 T5): risk-tiered çift pipeline — stage örnekleri paylaşımlı kurulur; runReviewDiff
       // triaj skoru < ciEnsembleRiskThreshold → gatePipeline, değilse fullPipeline seçer.
@@ -214,12 +229,13 @@ export function buildCli(workDir = process.cwd()): Command {
       // full pipeline aynı gates + llm-ensemble advisory override ile koşar.
       const gateStages = [
         new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-        new SecretScanStage(), new MutationStage(policy),
+        new SecretScanStage(), new MutationStage(policy, undefined, repoDir()),
       ];
       // I2 (final fix wave): review-diff CI yolu da `run` assembly'siyle aynı kompozisyonu kullanır —
       // applied playbook'lar CI reviewer prompt'undan da eksik kalmasın.
+      // R22 (faz 4 T3): composeReviewerLessons — per-line 'yok.' filtresi (blok düşürme yok).
       const playbooks = loadAppliedPlaybooks(repoDir());
-      const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
+      const reviewerLessons = composeReviewerLessons([mem, playbooks]);
       const ensemble = new LlmEnsembleStage(
         new LlmReviewerStage(gateway, reviewerLessons),
         new LlmReviewerAltStage(gateway, { model: altModelFor(policy), reviewerLessons }), // I3: provider-aware alt model
@@ -255,19 +271,21 @@ export function buildCli(workDir = process.cwd()): Command {
       const adapter = new TypeScriptAdapter(effPolicy, repoDir()); // R13 + I2: eval pipeline'ı da sandbox moduna uyar
       const stages: ReviewStage[] = [
         new RiskTriageStage(effPolicy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-        new SecretScanStage(), new MutationStage(effPolicy),
+        new SecretScanStage(), new MutationStage(effPolicy, undefined, repoDir()),
       ];
       if (opts.full) {
-        // T6: gateway createGateway(effPolicy) ile kurulur (provider'a göre Anthropic/OpenAI).
-        // Eval yolu bütçe sayacı TUTMAZ: aday değerlendirme shadow,
+        // T6: gateway createGateways(effPolicy) ile kurulur (provider'a göre; R21 cross-fallback
+        // chain dahil). Eval yolu bütçe sayacı TUTMAZ: aday değerlendirme shadow,
         // production eval salt-okunur karşılaştırmadır; BudgetedGateway sarması bilinçli yapılmadı.
-        const gateway = createGateway(effPolicy);
+        const gateways = createGateways(effPolicy);
+        const gateway = gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways);
         const mem = memory();
         // I2 (final fix wave): eval --full üretim pipeline'ının donmuş yargıcıdır — reviewerLessons
         // `run` assembly'siyle AYNI kompozisyon (mem + applied playbook'lar), aksi halde eval üretim
         // reviewer'ından FARKLI bir prompt'la ölçer (karşılaştırma geçersizleşir).
+        // R22 (faz 4 T3): composeReviewerLessons — per-line 'yok.' filtresi (blok düşürme yok).
         const playbooks = loadAppliedPlaybooks(repoDir());
-        const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
+        const reviewerLessons = composeReviewerLessons([mem, playbooks]);
         stages.push(new LlmEnsembleStage(
           new LlmReviewerStage(gateway, reviewerLessons),
           new LlmReviewerAltStage(gateway, { model: altModelFor(effPolicy), reviewerLessons }), // I3: provider-aware alt model
@@ -298,7 +316,12 @@ export function buildCli(workDir = process.cwd()): Command {
   });
   const evolve = program.command('evolve').description('L3 evrim: shadow aday üretimi + golden-gerileme kapılı apply');
   evolve.option('--shadow', 'playbook aday üretimi + shadow eval')
-    .action(async (opts: { shadow?: boolean }) => {
+    // R19 (faz 4 T4): --llm — deterministik shadow akışı bittikten SONRA LLM üretimli playbook
+    // mutasyon taslakları da candidate/'e yazılır. --llm YOKSA davranış aynen (mutasyon gateway
+    // çağrısı hiç yapılmaz — deterministik mod). R19 kapılar: yalnız l3Active + golden gerileme
+    // YOKken çalışır; anahtarsız ortamda GatewayError fail-closed yukarı fırlar.
+    .option('--llm', 'shadow sonrası LLM üretimli mutasyon taslakları (R19 — l3Active + gerileme kapılı, anahtarsız fail-closed)')
+    .action(async (opts: { shadow?: boolean; llm?: boolean }) => {
       if (!opts.shadow) throw new Error('--shadow gerekli (v3: yalnız shadow modu desteklenir)');
       const { policy } = loadConfig(repoDir());
       const s = store();
@@ -327,10 +350,12 @@ export function buildCli(workDir = process.cwd()): Command {
       // GERÇEKTEN girer. Policy = production policy (playbook-only shadow). Eval yolu bütçe sayacı
       // TUTMAZ (eval komutuyla aynı hüküm — shadow, harcayan üretim çağrısı değildir).
       const adapter = new TypeScriptAdapter(policy, repoDir()); // R13 + I2: shadow eval pipeline'ı da sandbox moduna uyar
-      const gateway = createGateway(policy);
+      // R21 (faz 4 T6): cross-provider fallback chain — eval yolu gibi budget sayacı tutmaz (aynen).
+      const gateways = createGateways(policy);
+      const gateway = gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways);
       const pipeline = new ReviewPipeline([
         new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
-        new SecretScanStage(), new MutationStage(policy),
+        new SecretScanStage(), new MutationStage(policy, undefined, repoDir()),
         new LlmEnsembleStage(
           new LlmReviewerStage(gateway, provider),
           new LlmReviewerAltStage(gateway, { model: altModelFor(policy), reviewerLessons: provider }), // I3: provider-aware alt model
@@ -341,7 +366,30 @@ export function buildCli(workDir = process.cwd()): Command {
         repoPath: repoDir(), pipeline, policy, store: s, l3MinGoldenTasks: policy.l3MinGoldenTasks,
         candidate: { label: 'evolve-shadow' },
       });
-      console.log(JSON.stringify({ candidates, shadowEval, baseline: { evalId: baseline.evalId, failed: baseline.failed, score: baseline.score } }, null, 2));
+      const out: {
+        candidates: EvolutionCandidate[];
+        shadowEval: EvalSummary;
+        baseline: { evalId: string; failed: number; score: number };
+        llmMutations?: LlmMutationDraft[];
+      } = { candidates, shadowEval, baseline: { evalId: baseline.evalId, failed: baseline.failed, score: baseline.score } };
+      // R19 (faz 4 T4): --llm yalnız shadow koşumu SONRASINDA devreye girer; gateway tamamen
+      // dışarıdan inject edilir (generateLlmMutations). --llm YOKSA mutasyon gateway çağrısı hiç
+      // yapılmaz — deterministik davranış aynen. Hatalar (eşik-altı throw, golden-gerileme throw,
+      // GatewayError) yakalanır: anlamlı mesaj stderr'e + exit non-zero; deterministik sonuç
+      // JSON'u stdout'ta aynen yazılır (parse edilebilir kalır).
+      if (opts.llm) {
+        try {
+          // R21 (faz 4 T6): mutasyon gateway'i de chain — yalnız --llm'de kurulur.
+          const mutGateways = createGateways(policy);
+          const mutGateway = mutGateways.length === 1 ? mutGateways[0] : new ChainedGateway(mutGateways);
+          out.llmMutations = await generateLlmMutations({ ctx, gateway: mutGateway, baseline, shadowEval });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`evolve --llm başarısız: ${msg}`);
+          process.exitCode = '1';
+        }
+      }
+      console.log(JSON.stringify(out, null, 2));
     });
   evolve.command('apply').argument('<evoId>')
     .description('adayı golden-gerileme kapısıyla playbook staging dizinine yaz')
@@ -358,5 +406,27 @@ export function buildCli(workDir = process.cwd()): Command {
       await applyEvolution(ctx, candidate, evalRunToSummary(shadowEv.payload, policy.l3MinGoldenTasks), evalRunToSummary(baseEv.payload, policy.l3MinGoldenTasks));
       console.log(`Evrim uygulandı: ${evoId} — playbook staging dosyası yazıldı (insan devreye alır) + ProposalCreated kaydedildi.`);
     });
+
+  // R17 (faz 4 T1): golden dataset küratörlüğü — kabul koşum kanıtından taslak üretimi + insan
+  // onaylı kabul/ret. A5 değişmezi: `draft` YALNIZ .devloop/golden-drafts/ staging'ine yazar;
+  // golden/ dizinine yalnız `accept` (rename) dokunur — otomatik golden büyümesi kapalıdır.
+  const goldenCmd = program.command('golden').description('golden dataset küratörlüğü');
+  goldenCmd.command('draft').option('--from-run <runId>').action(async (opts: { fromRun?: string }) => {
+    const r = await generateGoldenDrafts({ store: store(), repoPath: repoDir(), draftsDir: join(repoDir(), '.devloop', 'golden-drafts'), ...(opts.fromRun ? { fromRun: opts.fromRun } : {}) });
+    console.log(JSON.stringify(r, null, 2));
+  });
+  goldenCmd.command('list').action(async () => {
+    const d = join(repoDir(), '.devloop', 'golden-drafts');
+    const names = existsSync(d) ? readdirSync(d).filter((n) => n.endsWith('.task.json')) : [];
+    console.log(names.join('\n') || '(taslak yok)');
+  });
+  goldenCmd.command('accept').argument('<draftId>').action(async (id: string) => {
+    acceptDraft(join(repoDir(), '.devloop', 'golden-drafts'), join(repoDir(), '.devloop', 'golden'), id);
+    console.log('Golden görev kabul edildi.');
+  });
+  goldenCmd.command('discard').argument('<draftId>').action(async (id: string) => {
+    discardDraft(join(repoDir(), '.devloop', 'golden-drafts'), id);
+    console.log('Taslak atıldı.');
+  });
   return program;
 }

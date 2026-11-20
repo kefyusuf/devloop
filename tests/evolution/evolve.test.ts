@@ -1,18 +1,49 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   generateEvolutionCandidates, writeShadowCandidates, applyEvolution,
-  loadCandidate, candidatePlaybookProvider, loadAppliedPlaybooks, type EvolutionCandidate, type EvolveContext,
+  loadCandidate, candidatePlaybookProvider, loadAppliedPlaybooks, generateLlmMutations,
+  type EvolutionCandidate, type EvolveContext,
 } from '../../src/evolution/evolve.js';
 import { DevloopEventSchema } from '../../src/contracts/events.js';
 import { VerdictStore } from '../../src/store/store.js';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import type { EvalSummary } from '../../src/eval/evalRunner.js';
 import { LlmReviewerStage } from '../../src/pipeline/stages/llmReviewer.js';
-import type { LlmGateway } from '../../src/gateway/gateway.js';
+import { composeReviewerLessons } from '../../src/shell/composeLessons.js'; // R22 (faz 4 T3): cli.ts kompozisyonu artık GERÇEK helper'la aynalanır
+import { GatewayError, type LlmGateway } from '../../src/gateway/gateway.js';
 import type { ReviewContext } from '../../src/contracts/review.js';
+import { buildCli } from '../../src/shell/cli.js';
 import { z } from 'zod';
+
+// R19 (faz 4 T4) test donanımı: factory mock — CLI evolve koşumlarında "gateway spy zero-call"
+// kanıtı için createGateway spy gateway döner. Shadow pipeline'ın ensemble'ı da bu gateway'i alır;
+// sır-fixture'lı testte pipeline ensemble'a ULAŞMAZ (secret-scan gate deterministik fail) — böylece
+// spy çağrı sayısı ortamdan bağımsız 0 kalır (ensemble'a ulaşım aksi halde env girdisiydi).
+const { gatewayCompleteSpy } = vi.hoisted(() => ({
+  gatewayCompleteSpy: vi.fn(async () => {
+    throw new Error('spy gateway: beklenmeyen çağrı');
+  }),
+}));
+vi.mock('../../src/gateway/factory.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/gateway/factory.js')>();
+  // R21 (faz 4 T6): CLI createGateways + ChainedGateway kullanır — mock createGateways'i de
+  // override eder (tek ayak = spy gateway; CLI length===1 düz gateway seçer → davranış aynen).
+  return {
+    ...actual,
+    createGateway: () => ({ complete: gatewayCompleteSpy }),
+    createGateways: () => [{ complete: gatewayCompleteSpy }],
+  };
+});
+
+// R19: generateLlmMutations spy-wrapped (gerçek impl korunur) — deterministik modda "--llm yoksa
+// generateLlmMutations ÇAĞRILMAZ" kanıtı doğrudan spy üzerinden okunur.
+vi.mock('../../src/evolution/evolve.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/evolution/evolve.js')>();
+  return { ...actual, generateLlmMutations: vi.fn(actual.generateLlmMutations) };
+});
 
 const baseSummary = (over: Partial<EvalSummary> = {}): EvalSummary => ({
   evalId: 'base-eval', goldenCount: 60, passed: 60, failed: 0, score: 100,
@@ -209,12 +240,14 @@ describe('loadAppliedPlaybooks (applied playbook → reviewer prompt, I2)', () =
     };
     writeShadowCandidates(ctx, [applied]);
     await applyEvolution(ctx, applied, baseSummary({ evalId: 's', failed: 0 }), baseSummary()); // staging: .devloop/playbooks/evo-ap1.json
-    // cli.ts kompozisyonunun birebir aynası: [mem, playbooks] — 'yok.' bildirimleri filtrelenir
+    // cli.ts kompozisyonunun birebir aynası: [mem, playbooks] — R22 (faz 4 T3) ile cli.ts
+    // composeReviewerLessons helper'ını kullanır; ayna da GERÇEK helper'la kurulur (satır bazlı
+    // 'yok.' filtresi — blok düşürme yok).
     const mem = { reviewerContext: () => 'Reviewer dersi yok.' }; // boş LessonMemory davranışı
     const playbooks = loadAppliedPlaybooks(dir);
     expect(playbooks.reviewerContext()).toContain('"off-by-one" false-positive tekrarı');
     expect(playbooks.reviewerContext()).toContain('kanıt eşiği yükseltilmeli');
-    const reviewerLessons = { reviewerContext: () => [mem.reviewerContext(), playbooks.reviewerContext()].filter((s) => s && !s.includes('yok.')).join('\n') };
+    const reviewerLessons = composeReviewerLessons([mem, playbooks]);
     // capture deseni (llmReviewer.test.ts ile aynı): mock gateway user/system'i yakalar
     let capturedSystem = '';
     let capturedUser = '';
@@ -244,6 +277,40 @@ describe('loadAppliedPlaybooks (applied playbook → reviewer prompt, I2)', () =
   });
 });
 
+// R18 (faz 4 T2): loadAppliedPlaybooks ÇİFT bağlam döner — playbook-generator staging'i
+// generatorContext()'e girer (- <title> — <note> formatı); reviewerContext davranışı aynen korunur
+// (generator staging reviewer bağlamını kirletmez); boşken 'yok.' sentineli.
+describe('loadAppliedPlaybooks generatorContext (R18)', () => {
+  it('applyEvolution ile yazılan playbook-generator staging → generatorContext başlık+notu taşır; reviewerContext temiz kalır', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo-gen-'));
+    const ctx = makeCtx(dir, { playbookDir: join(dir, '.devloop', 'playbooks') }); // loadAppliedPlaybooks repoPath sözleşmesi
+    const applied: EvolutionCandidate = {
+      evoId: 'evo-gen1', kind: 'playbook-generator', title: 'test-diff blokları tekrarlıyor',
+      content: { note: 'generator kabul kriterlerine test uyumu maddesi eklenebilir' }, sourceEvalId: 'base-eval',
+    };
+    writeShadowCandidates(ctx, [applied]);
+    await applyEvolution(ctx, applied, baseSummary({ evalId: 's', failed: 0 }), baseSummary()); // staging: .devloop/playbooks/evo-gen1.json
+    const p = loadAppliedPlaybooks(dir);
+    const gen = p.generatorContext();
+    expect(gen).toContain('test-diff blokları tekrarlıyor');
+    expect(gen).toContain('generator kabul kriterlerine test uyumu maddesi eklenebilir');
+    expect(gen).toContain('- test-diff blokları tekrarlıyor — generator kabul kriterlerine'); // - <title> — <note> formatı
+    expect(gen).not.toContain('yok.'); // dolu bağlam sentineli taşımaz
+    // reviewer bağlamı generator staging'iyle kirletilmez (I2 davranışı korunur)
+    expect(p.reviewerContext()).toBe('Reviewer playbook önerisi yok.');
+  });
+
+  it('boş dizin → generatorContext sentineli döner; bozuk json fail-soft atılır', () => {
+    // playbooks/ dizini hiç yok
+    expect(loadAppliedPlaybooks(mkdtempSync(join(tmpdir(), 'evo-gen2-'))).generatorContext()).toBe('Generator playbook önerisi yok.');
+    // bozuk json dolu dizinde sentineli bozmaz
+    const dir = mkdtempSync(join(tmpdir(), 'evo-gen3-'));
+    mkdirSync(join(dir, '.devloop', 'playbooks'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'playbooks', 'broken.json'), '{ bozuk', 'utf8');
+    expect(loadAppliedPlaybooks(dir).generatorContext()).toBe('Generator playbook önerisi yok.');
+  });
+});
+
 // (e) Kontrat şema testi: ProposalCreated kind enum'u genişledi — eski kindler korunur, yeniler geçer.
 describe('ProposalCreated kind şeması', () => {
   const env = { event_id: 'e1', schema_version: 1, ts: new Date().toISOString(), run_id: 'r', task_id: 't', actor: 'learning' };
@@ -259,5 +326,157 @@ describe('ProposalCreated kind şeması', () => {
     expect(DevloopEventSchema.safeParse({ ...env, type: 'ProposalCreated', payload: payload('regression-test') }).success).toBe(true);
     expect(DevloopEventSchema.safeParse({ ...env, type: 'ProposalCreated', payload: payload('policy-tweak') }).success).toBe(true);
     expect(DevloopEventSchema.safeParse({ ...env, type: 'ProposalCreated', payload: payload('sihirli') }).success).toBe(false);
+  });
+});
+
+// R19 (faz 4 T4): LLM üretimli playbook mutasyonları — gateway tamamen dışarıdan inject; taslaklar
+// candidate/ staging'ine yazılır (writeShadowCandidates yeniden kullanılır); evoId deterministik
+// (sha256(kind:title:JSON(content)+sourceEvalId).slice(16)); LLM adayları da T4 hüküm kapısından
+// (l3Active + golden-gerileme) geçer; anahtarsız ortamda GatewayError yukarı fırlar (fail-closed).
+describe('generateLlmMutations (R19)', () => {
+  // (a) mock gateway mutasyon taslağı üretir → candidate/'e yazılır + capturedUser baseline/shadow
+  // perTask farklarını içerir. baseline g2 fail → shadow g2 pass (İYİLEŞME — gerileme yok, kapı geçilir).
+  it('--llm: mock gateway mutasyon taslağı üretir ve candidate/ staging\'e yazılır; prompt perTask farklarını taşır', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo-llm1-'));
+    const ctx = makeCtx(dir); // goldenCount 60 ≥ eşik 50 → l3Active guard geçilir
+    let capturedUser = '';
+    const gw = {
+      complete: vi.fn(async (req: { system: string; user: string }) => {
+        capturedUser = req.user;
+        return {
+          data: { mutations: [{ kind: 'playbook-reviewer', title: 'kanıt eşiği yükselt', content: { category: 'perf' }, rationale: 'tekrarlayan fp' }] },
+          usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 },
+        };
+      }),
+    } as unknown as LlmGateway;
+    const baseline = baseSummary({ evalId: 'b-llm', failed: 1, score: 98.3, perTask: [{ goldenId: 'g1', pass: true, reasons: [] }, { goldenId: 'g2', pass: false, reasons: ['eski hata'] }] });
+    const shadowEval = baseSummary({ evalId: 's-llm', failed: 0, score: 100, perTask: [{ goldenId: 'g1', pass: true, reasons: [] }, { goldenId: 'g2', pass: true, reasons: [] }] });
+    const cands = await generateLlmMutations({ ctx, gateway: gw, baseline, shadowEval });
+    expect(cands).toHaveLength(1);
+    expect(cands[0]).toMatchObject({ kind: 'playbook-reviewer', title: 'kanıt eşiği yükselt', content: { category: 'perf' }, rationale: 'tekrarlayan fp', sourceEvalId: 'b-llm' });
+    // evoId deterministik — sözleşme formülü: sha256(kind:title:JSON(content)+sourceEvalId).slice(16)
+    const expectedEvoId = createHash('sha256')
+      .update('playbook-reviewer:kanıt eşiği yükselt:' + JSON.stringify({ category: 'perf' }) + '+b-llm')
+      .digest('hex').slice(0, 16);
+    expect(cands[0].evoId).toBe(expectedEvoId);
+    // ikinci çağrı AYNI evoId — deterministik (shadowEval.evalId girdiye karışmaz; sourceEvalId baseline)
+    const cands2 = await generateLlmMutations({ ctx, gateway: gw, baseline, shadowEval });
+    expect(cands2[0].evoId).toBe(cands[0].evoId);
+    // staging: candidate/<evoId>.json — rationale dahil yazılır; loadCandidate okur
+    expect(existsSync(join(ctx.candidateDir, `${cands[0].evoId}.json`))).toBe(true);
+    const staged = JSON.parse(readFileSync(join(ctx.candidateDir, `${cands[0].evoId}.json`), 'utf8')) as Record<string, unknown>;
+    expect(staged.rationale).toBe('tekrarlayan fp');
+    expect(loadCandidate(ctx, cands[0].evoId)).toMatchObject({ evoId: cands[0].evoId, kind: 'playbook-reviewer' });
+    // prompt: baseline/shadow perTask farkları taşınır (goldenId + fail/pass + baseline nedeni)
+    expect(capturedUser).toContain('baseline');
+    expect(capturedUser).toContain('shadow');
+    expect(capturedUser).toContain('g2');
+    expect(capturedUser).toContain('eski hata');
+    expect(capturedUser).toContain('fail');
+    expect(capturedUser).toContain('pass');
+  });
+
+  // (b) anahtarsız (GatewayError throw eden gateway) → hata yukarı fırlar (fail-closed); hata
+  // yutulmaz, staging yazılmaz.
+  it('anahtarsız (GatewayError) → fail-closed yukarı fırlar', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo-llm2-'));
+    const ctx = makeCtx(dir);
+    const gw: LlmGateway = {
+      complete: vi.fn(async () => { throw new GatewayError('API anahtarı yok (env).'); }),
+    };
+    await expect(generateLlmMutations({ ctx, gateway: gw, baseline: baseSummary(), shadowEval: baseSummary({ evalId: 's-key' }) }))
+      .rejects.toThrow(GatewayError);
+    expect(vi.mocked(gw.complete)).toHaveBeenCalledTimes(1); // gateway çağrısı yapıldı, hata YUTULMAZ
+    expect(existsSync(ctx.candidateDir)).toBe(false); // staging YOK — hata yukarı fırladı
+  });
+
+  // Kapılar (sözleşme hükümleri — test (a)/(b) bunları vurmaz): l3Active guard + aynen T4 hüküm
+  // golden-gerileme throw'u; ikisi de gateway çağrısından ve staging yazımından ÖNCE vurur.
+  it('kapılar: l3 eşik altı → throw; golden gerileme → throw (LLM adayları da kapıdan — gateway çağrısından ÖNCE)', async () => {
+    const gw = { complete: vi.fn(async () => { throw new Error('kapılar gateway çağrısından önce vurmalı'); }) } as unknown as LlmGateway;
+    // kapı 1: goldenCount < l3MinGoldenTasks → 'L3 eşik altı — deterministik mod kullanın'
+    const dir1 = mkdtempSync(join(tmpdir(), 'evo-llm3-'));
+    await expect(generateLlmMutations({ ctx: makeCtx(dir1, { goldenCount: 10, l3MinGoldenTasks: 50 }), gateway: gw, baseline: baseSummary(), shadowEval: baseSummary({ evalId: 's1' }) }))
+      .rejects.toThrow('L3 eşik altı — deterministik mod kullanın');
+    // kapı 2: per-task pass→fail gerileme → aynen T4 hüküm mesajı 'Evolve reddedildi: golden gerileme'
+    const dir2 = mkdtempSync(join(tmpdir(), 'evo-llm4-'));
+    const baseline = baseSummary({ perTask: [{ goldenId: 'g1', pass: true, reasons: [] }] });
+    const shadowEval = baseSummary({ evalId: 's-reg', failed: 1, score: 50, perTask: [{ goldenId: 'g1', pass: false, reasons: ['kırıldı'] }] });
+    await expect(generateLlmMutations({ ctx: makeCtx(dir2), gateway: gw, baseline, shadowEval }))
+      .rejects.toThrow('Evolve reddedildi: golden gerileme');
+    expect(vi.mocked(gw.complete)).not.toHaveBeenCalled(); // kapılar gateway'den ÖNCE
+    expect(existsSync(makeCtx(dir2).candidateDir)).toBe(false); // staging YOK
+  });
+
+  // (c) deterministik mod: --llm YOKSA generateLlmMutations ÇAĞRILMAZ — CLI testinde gateway spy
+  // zero-call kanıtı. Gerçek evolve --shadow koşumu yapılır (eşik policy override ile geçilir,
+  // shadow eval gerçekten koşar); fixtureDiff SIR içerir → secret-scan gate DETERMİNİSTİK fail →
+  // pipeline ensemble'a ulaşmaz (ensemble'a ulaşım aksi halde env girdisiydi — sır ile kesin
+  // kesilir; spy çağrısı her ortamda 0 kalır).
+  it('deterministik mod: --llm yoksa evolve --shadow gateway spy zero-call + generateLlmMutations çağrılmaz', async () => {
+    vi.mocked(generateLlmMutations).mockClear();
+    gatewayCompleteSpy.mockClear();
+    const dir = mkdtempSync(join(tmpdir(), 'evo-llm5-'));
+    const policyYaml = readFileSync(join(process.cwd(), 'policy.yaml'), 'utf8').replace('l3MinGoldenTasks: 50', 'l3MinGoldenTasks: 1');
+    writeFileSync(join(dir, 'policy.yaml'), policyYaml, 'utf8');
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify({
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const password = "aaaaaaaaaaaaaaaaaaaaaaaa";',
+      expected: { gatesPass: false, requiredFindings: [{ category: 'secret', severity: 'critical' }], forbiddenCategories: [] },
+    }));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 1, passed: 1, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    try {
+      await buildCli(dir).parseAsync(['node', 'devloop', 'evolve', '--shadow']); // --llm YOK
+    } finally { console.log = origLog; }
+    expect(gatewayCompleteSpy).not.toHaveBeenCalled(); // gateway mock'u hiç çağrılmaz (zero-call)
+    expect(vi.mocked(generateLlmMutations)).not.toHaveBeenCalled(); // LLM mutasyon yolu hiç açılmadı
+    const parsed = JSON.parse(out.join('\n')) as Record<string, unknown>;
+    expect(parsed.llmMutations).toBeUndefined(); // çıktı aynen — llm alanı yok
+    expect(Array.isArray(parsed.candidates)).toBe(true);
+    expect(parsed.shadowEval).toMatchObject({ configSnapshot: { candidate: 'evolve-shadow' } });
+  });
+
+  // CLI hata raporlama: --llm'de hata (anahtarsız GatewayError; env'e göre gerileme throw'u da
+  // olabilir) yakalanır → anlamlı mesaj (stderr) + exit non-zero; deterministik sonuç JSON'u
+  // stdout'ta aynen kalır (parse edilebilir). İki env yolu da (shadow failed 0/1) exitCode '1'
+  // verir — test ortam-bağımsız sözleşmeyi doğrular.
+  it('evolve --shadow --llm: gateway hatası → anlamlı mesaj + exit non-zero (deterministik çıktı korunur)', async () => {
+    vi.mocked(generateLlmMutations).mockClear();
+    gatewayCompleteSpy.mockClear();
+    const dir = mkdtempSync(join(tmpdir(), 'evo-llm6-'));
+    const policyYaml = readFileSync(join(process.cwd(), 'policy.yaml'), 'utf8').replace('l3MinGoldenTasks: 50', 'l3MinGoldenTasks: 1');
+    writeFileSync(join(dir, 'policy.yaml'), policyYaml, 'utf8');
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify({
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    }));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 1, passed: 1, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    const out: string[] = []; const errs: string[] = [];
+    const origLog = console.log, origErr = console.error;
+    const prevExit = process.exitCode;
+    console.log = (m: string) => out.push(m); console.error = (m: string) => errs.push(m);
+    try {
+      await buildCli(dir).parseAsync(['node', 'devloop', 'evolve', '--shadow', '--llm']);
+    } finally {
+      console.log = origLog; console.error = origErr;
+    }
+    expect(errs.join('\n')).toContain('evolve --llm başarısız'); // anlamlı mesaj
+    // exit non-zero — CLI string '1' set eder (review-diff ile aynı stil); Node ≥24 exitCode
+    // string atamını runtime'da number'a normalleştirir (kanıt: node -e "process.exitCode='1'")
+    // → tip-bağımsız sayısal karşılaştırma iki Node davranışında da geçerli.
+    expect(Number(process.exitCode ?? 0)).toBe(1);
+    process.exitCode = prevExit; // testler arası process state sızıntısı temizlenir
+    const parsed = JSON.parse(out.join('\n')) as Record<string, unknown>; // stdout JSON parse edilebilir kalır
+    expect(parsed.llmMutations).toBeUndefined();
+    expect(Array.isArray(parsed.candidates)).toBe(true);
   });
 });

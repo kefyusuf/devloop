@@ -134,6 +134,19 @@ describe('parseDiff', () => {
       { path: 'b.ts', addedContent: 'two' },
     ]);
   });
+
+  // R22 (faz 4 T3): header regex'leri trailing whitespace toleranslı — malformed diff'lerde
+  // (`+++ b/x.ts ` sonunda boşluk/tab) eski davranış başlığı tanımaz, kapsam açılmazdı; `[ \t]*$`
+  // toleransı başlığı yine tanır (CRLF zaten satır bazında `\r` strip'iyle işlenir).
+  it('R22: trailing-space header tanınır (`--- a/x.ts ` + `+++ b/x.ts `)', () => {
+    const d = ['--- a/x.ts ', '+++ b/x.ts ', '@@ -1 +1,2 @@', ' const x=1;', '+const y=2;'].join('\n');
+    expect(parseDiff(d)).toEqual([{ path: 'x.ts', addedContent: 'const y=2;' }]);
+  });
+
+  it('R22: trailing-tab header tanınır; yol duyarlılığı korunur (tab yola sızmaz)', () => {
+    const d = ['--- a/y.ts\t', '+++ b/y.ts\t', '@@ -1 +1,2 @@', '+const z=3;'].join('\n');
+    expect(parseDiff(d)).toEqual([{ path: 'y.ts', addedContent: 'const z=3;' }]);
+  });
 });
 
 describe('review-diff exit kodları', () => {

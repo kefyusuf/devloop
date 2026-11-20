@@ -9,8 +9,14 @@ import type { Artifact } from '../contracts/schemas.js';
  * R14 (faz 3 T8): gate-config yüzeyleri de kapalı — tsconfig.json (derleyici politikası),
  * eslint.config.js / .eslintrc.json (lint gate politikası). Aksi halde artifact, gate sonuçlarını
  * değiştirerek kendi çıktısını onaylatabilir (gate-manipülasyonu).
+ * R22 (faz 4 T3): kardeş yüzeyler — eski eslintrc formatları (.eslintrc.js/.cjs/.yml) ve alternatif
+ * flat-config uzantıları (eslint.config.mjs/.cjs) DA lint-gate politikası yüzeyidir (aynı gerekçe).
  */
-const DENIED_EXACT = new Set(['policy.yaml', '.gitignore', 'package.json', 'tsconfig.json', 'eslint.config.js', '.eslintrc.json']);
+const DENIED_EXACT = new Set([
+  'policy.yaml', '.gitignore', 'package.json', 'tsconfig.json',
+  'eslint.config.js', '.eslintrc.json', // R14 (faz 3 T8)
+  'eslint.config.mjs', 'eslint.config.cjs', '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.yml', // R22 (faz 4 T3) kardeşler
+]);
 
 /** A5: canonicalization + `..` reddi + symlink denetimi. Repo dışına yazma yok. */
 export async function applyArtifact(repoPath: string, artifact: Artifact): Promise<void> {

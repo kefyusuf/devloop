@@ -58,13 +58,28 @@ const GenOutput = z.object({
 
 export class LlmGeneratorBackend implements GeneratorBackend {
   readonly id = 'llm';
-  constructor(private readonly gateway: LlmGateway, private readonly memory?: LessonsProvider) {}
+  // R18 (faz 4 T2): 3. opsiyonel param playbookProvider — insan-onaylı applied generator playbook
+  // bağlamı (loadAppliedPlaybooks(repoDir()).generatorContext) prompt'a girer; yalnız üretim yolları
+  // (CLI `run`) taşır — shadow/eval aday akışı candidatePlaybookProvider ile sınırlı kalır (faz 3 hükmü).
+  constructor(
+    private readonly gateway: LlmGateway,
+    private readonly memory?: LessonsProvider,
+    private readonly playbookProvider?: { generatorContext(): string },
+  ) {}
 
   async generate(task: TaskSpec, ctx: GenerationContext): Promise<Artifact> {
     // R1 (bütçe doğruluğu): ctx.gateway ?? ctor gateway — ikisi de yoksa generate edilemez.
     const gw = ctx.gateway ?? this.gateway;
     if (!gw) throw new Error('Generator için gateway yok (ctx.gateway veya ctor)');
     const lessons = ctx.lessons || this.memory?.contextFor(task) || 'Aktif ders yok.';
+    // R18: yalnız BİREBİR sentinel ('Generator playbook önerisi yok.') bloğu düşürür — fix round 1:
+    // eski `includes('yok.')` substring kapısı, not içinde 'yok.' geçen meşru insan-onaylı playbook'u
+    // (Türkçe eksiklik ifadesi — tam da evrim notlarının kullandığı dil) sessizce düşürüyordu.
+    // Boş bağlam da blok kurmaz.
+    const playbook = this.playbookProvider?.generatorContext() ?? '';
+    const playbookBlock = playbook && playbook !== 'Generator playbook önerisi yok.'
+      ? `GENERATOR PLAYBOOK (insan-onaylı kurallar):\n${playbook}`
+      : '';
     const feedbackBlock = ctx.feedback.length === 0 ? '' :
       `ÖNCEKİ TUR BULGULARI (bunları çöz):\n${ctx.feedback.map((f) => `- [${f.severity}] ${f.category} @ ${f.evidence.file}:${f.evidence.line ?? '-'}: ${f.suggestion ?? ''}`).join('\n')}`;
     const repoBlock = [
@@ -77,6 +92,7 @@ export class LlmGeneratorBackend implements GeneratorBackend {
       `KABUL KRİTERLERİ:\n${task.acceptanceCriteria.map((a) => `- ${a}`).join('\n')}`,
       `DOSYA KAPSAMI: ${task.filesScope.join(', ') || 'tüm repo'}`,
       repoBlock,
+      playbookBlock, // R18: feedbackBlock'tan ÖNCE — insan-onaylı kurallar tur bulgularından önce okunur
       feedbackBlock,
       'YALNIZCA yukarıdaki gerçek dosya içerikleriyle tutarlı değişiklik üret; mevcut sınıf/fonksiyon imzalarını koru; testleri kırık davranışa uydurma.',
     ].filter(Boolean).join('\n\n');

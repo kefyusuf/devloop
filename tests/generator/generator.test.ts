@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { LlmGeneratorBackend, readRepoContext } from '../../src/generator/generator.js';
 import { applyArtifact } from '../../src/generator/apply.js';
+import { loadAppliedPlaybooks } from '../../src/evolution/evolve.js'; // R18 (faz 4 T2): applied generator playbook kaynağı
 import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -62,6 +63,67 @@ describe('LlmGeneratorBackend', () => {
     const base = readRepoContext(dir, ['src/']);
     const backend = new LlmGeneratorBackend(undefined as never); // ctor gateway yok
     await expect(backend.generate(task, { ...base, lessons: '', feedback: [] })).rejects.toThrow('gateway yok');
+  });
+});
+
+// R18 (faz 4 T2): applied playbook-generator staging'i (applyEvolution'un .devloop/playbooks/
+// yazımıyla birebir format) generator prompt'una girer — 'GENERATOR PLAYBOOK' bloğu
+// feedbackBlock'tan ÖNCE; boş/sentinel bağlam prompt'a kirlilik taşımaz.
+describe('LlmGeneratorBackend playbook bağlamı (R18)', () => {
+  const captureGateway = (): { gw: LlmGateway; captured: () => string } => {
+    let captured = '';
+    const gw: LlmGateway = { complete: vi.fn(async (req: { user: string }) => {
+      captured = req.user;
+      return { data: { intent: 'i', rejectedAlternatives: [], testEvidence: 'e', files: [{ path: 'src/math.ts', content: 'export const sum=(a:number,b:number)=>a+b;' }] }, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
+    }) } as unknown as LlmGateway;
+    return { gw, captured: () => captured };
+  };
+  const finding: Finding = { id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, evidence: { file: 'a.ts' }, suggestion: 'unused var' };
+
+  it('applied playbook-generator json → prompt GENERATOR PLAYBOOK başlığı + title/note içeriği taşır; feedbackBlock\'tan önce konumlanır', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpb-'));
+    // applyEvolution staging formatı birebir: .devloop/playbooks/<evoId>.json
+    mkdirSync(join(dir, '.devloop', 'playbooks'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'playbooks', 'evo-gen1.json'), JSON.stringify({
+      evoId: 'evo-gen1', kind: 'playbook-generator', title: 'test-diff blokları tekrarlıyor',
+      content: { note: 'generator kabul kriterlerine test uyumu maddesi eklenebilir' },
+    }), 'utf8');
+    const { gw, captured } = captureGateway();
+    const base = readRepoContext(dir, ['src/']); // .devloop SKIP_DIRS'ta — staging prompt'ın repo bölümüne sızmaz
+    const backend = new LlmGeneratorBackend(gw, undefined, loadAppliedPlaybooks(dir)); // R18: 3. param
+    await backend.generate(task, { ...base, lessons: 'AKTİF DERS: fiil isimleri.', feedback: [finding] });
+    expect(captured()).toContain('GENERATOR PLAYBOOK (insan-onaylı kurallar)');
+    expect(captured()).toContain('test-diff blokları tekrarlıyor');
+    expect(captured()).toContain('generator kabul kriterlerine test uyumu maddesi eklenebilir');
+    // feedbackBlock'tan ÖNCE (kontrat konumu)
+    expect(captured().indexOf('GENERATOR PLAYBOOK')).toBeLessThan(captured().indexOf('ÖNCEKİ TUR BULGULARI'));
+  });
+
+  it('provider yokken VEYA bağlam sentinel\'ken prompt\'ta GENERATOR PLAYBOOK bloğu olmaz', async () => {
+    const { gw, captured } = captureGateway();
+    const dir = mkdtempSync(join(tmpdir(), 'gpb2-'));
+    const base = readRepoContext(dir, ['src/']);
+    await new LlmGeneratorBackend(gw, undefined, undefined).generate(task, { ...base, lessons: '', feedback: [] });
+    expect(captured()).not.toContain('GENERATOR PLAYBOOK');
+    // sentinel bağlam: loadAppliedPlaybooks boş dizin → 'yok.' → blok prompt'a girmez
+    const { gw: gw2, captured: captured2 } = captureGateway();
+    await new LlmGeneratorBackend(gw2, undefined, loadAppliedPlaybooks(dir)).generate(task, { ...base, lessons: '', feedback: [] });
+    expect(captured2()).not.toContain('GENERATOR PLAYBOOK');
+  });
+
+  // Fix round 1 (exact-sentinel gating): substring gate (`includes('yok.')`) not içinde 'yok.'
+  // geçen MEŞRU insan-onaylı playbook'u da sessizce düşürüyordu (Türkçe eksiklik ifadesi tam da
+  // evrim notlarının kullandığı dil). Hüküm: yalnız BİREBİR sentinel ('Generator playbook önerisi
+  // yok.') bloğu düşürür — metin içinde geçen 'yok.' blok yaşamaya devam eder.
+  it('not içinde \'yok.\' geçen meşru playbook bloğu DÜŞÜRÜLMEZ (exact-sentinel, fix round 1)', async () => {
+    const { gw, captured } = captureGateway();
+    const dir = mkdtempSync(join(tmpdir(), 'gpb3-'));
+    const base = readRepoContext(dir, ['src/']);
+    const note = 'kural A uygulanır; boş alan yok. kural B: isimler fiil olsun.';
+    const noteProvider = { generatorContext: () => note };
+    await new LlmGeneratorBackend(gw, undefined, noteProvider).generate(task, { ...base, lessons: '', feedback: [] });
+    expect(captured()).toContain('GENERATOR PLAYBOOK');
+    expect(captured()).toContain(note);
   });
 });
 
@@ -131,6 +193,23 @@ it('denylist case-insensitive: Policy.YAML da reddedilir', async () => {
 it('gate-config denylist: tsconfig/eslint yüzeyleri (case-variant dahil) reddedilir, src/x.ts yazılır', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'apgc-'));
   const denied = ['TsConfig.JSON', 'ESLint.config.js', '.ESLintrc.json', 'tsconfig.json', 'eslint.config.js', '.eslintrc.json'];
+  for (const path of denied) {
+    await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path, content: 'evil' }] }), path)
+      .rejects.toThrow('Yasaklı yol reddedildi');
+  }
+  await applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path: 'src/x.ts', content: 'export {};' }] });
+  expect(readFileSync(join(dir, 'src', 'x.ts'), 'utf8')).toBe('export {};');
+});
+
+// R22 (faz 4 T3): denylist kardeş yüzeyler — eski eslintrc formatları (.eslintrc.js/.cjs/.yml) ve
+// alternatif flat-config uzantıları (eslint.config.mjs/.cjs) DA lint-gate politikası yüzeyidir;
+// case-variant'ları da düşer (R4b lowercase karşılaştırması), normal kaynak dosyası yazılır.
+it('denylist kardeş yüzeyler: eslintrc/eslint-config varyantları (case dahil) reddedilir, src/x.ts yazılır', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apws-'));
+  const denied = [
+    '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.yml', 'eslint.config.mjs', 'eslint.config.cjs',
+    'Eslint.config.CJS', '.ESLintrc.YML', 'eslint.config.MJS',
+  ];
   for (const path of denied) {
     await expect(applyArtifact(dir, { diff: '', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [{ path, content: 'evil' }] }), path)
       .rejects.toThrow('Yasaklı yol reddedildi');
