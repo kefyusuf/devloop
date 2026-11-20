@@ -29,9 +29,13 @@ export function createGateways(policy: Policy): LlmGateway[] {
 // R21 (faz 4 T6): sıralı gateway zinciri — ayakları sırayla dener; ilk başarılı yanıt döner
 // (usage başarılı ayaktan gelir). GatewayError'lar toplanır; TÜM ayaklar başarısızsa tek
 // GatewayError fırlatır — son neden mesajı tüm ayakların hatalarını içerir (join). Boş zincir
-// (hiçbir ayak kurulamadı) anında GatewayError. ChainedGateway yalnız SIRAYI yönetir: req
-// (model override dahil) aynen iletilir; sağlayıcı namespace doğruluğu altModelFor/CLI'ın
-// (gateway ayakları policy'sinin kendi birincil modelini kullanır) sorumluluğundadır.
+// (hiçbir ayak kurulamadı) anında GatewayError. ChainedGateway SIRAYI ve model sahiplğini
+// yönetir: req.model override'ı yalnız BİRİNCİL ayğa aynen iletilir; non-primary ayaklarda
+// STRIP edilir — hüküm (I2 final fix wave, R21): req.model (ör. alt-reviewer override'ı
+// claude-haiku-3-5) diğer sağlayıcının namespace'inde geçersizdir; fallback ayağı diğer
+// sağlayıcının birincil modeliyle devreye girmelidir (gateway ayakları policy'sinin kendi
+// birincil modelini kullanır). Birincil ayakta `req.model ?? policy birincil modeli` davranışı
+// (faz 3 OpenAIGateway/AntropicGateway sözleşmesi) aynen korunur.
 export class ChainedGateway implements LlmGateway {
   constructor(private readonly gateways: LlmGateway[]) {}
   async complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; runId: string; model?: string }): Promise<{ data: T; usage: TokenUsage }> {
@@ -39,9 +43,12 @@ export class ChainedGateway implements LlmGateway {
       throw new GatewayError("Gateway zinciri boş — kurulabilen ayak yok (sağlayıcı anahtarları env'de mevcut değil).");
     }
     const errors: string[] = [];
-    for (const gateway of this.gateways) {
+    for (let i = 0; i < this.gateways.length; i++) {
+      const leg = this.gateways[i];
+      // Non-primary ayak kendi policy birincil modelini kullanır (R21) — req.model strip.
+      const legReq = i === 0 ? req : { ...req, model: undefined };
       try {
-        return await gateway.complete(req);
+        return await leg.complete(legReq);
       } catch (e) {
         errors.push(e instanceof Error ? e.message : String(e));
       }

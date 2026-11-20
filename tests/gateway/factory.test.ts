@@ -69,6 +69,31 @@ describe('createGateways + ChainedGateway (R21 cross-provider fallback)', () => 
     expect(urls.some((u) => u.includes('api.openai.com'))).toBe(true);
   });
 
+  // I2 (final fix wave, R21): req.model override (ör. alt-reviewer'ın claude-haiku-3-5'i) yalnız
+  // BİRİNCİL ayğa iletilir; non-primary (openai) ayakta STRIP edilir — ayağa gövdede kendi policy
+  // birincil modeli yazılır. Eski davranışta override aynen openai ayğına gidiyor, geçersiz
+  // model adı çağrıyı garanti GatewayError'a düşürüyordu.
+  it('(b2) I2: req.model override non-primary ayğa sızmaz — openai ayağı kendi policy modeliyle çağrılır', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'k-anthropic');
+    vi.stubEnv('OPENAI_API_KEY', 'k-openai');
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      return url.includes('api.anthropic.com') ? anthropicResponse('x', 500) : openaiResponse('{"answer":"ok"}');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const gateway = new ChainedGateway(createGateways(fallbackPolicy));
+    const r = await gateway.complete({ system: 's', user: 'q', schema: Schema, runId: 'r', model: 'claude-haiku-3-5' });
+    expect(r.data.answer).toBe('ok');
+    // birincil (anthropic) ayak req.model override'ını AYNEN alır — gövdedeki model override adı
+    const anthBody = JSON.parse(String((fetchMock.mock.calls.filter((c) => String(c[0]).includes('api.anthropic.com'))[0]![1]!).body)) as { model: string };
+    expect(anthBody.model).toBe('claude-haiku-3-5');
+    // non-primary (openai) ayakta model STRIP — gövdedeki model ayağın KENDİ policy birincil
+    // modelinden (openai.model) gelir; anthropic override adı gövdeye ASLA yazılmaz
+    const oaBody = JSON.parse(String((fetchMock.mock.calls.filter((c) => String(c[0]).includes('api.openai.com'))[0]![1]!).body)) as { model: string };
+    expect(oaBody.model).toBe(fallbackPolicy.llm.openai.model);
+    expect(oaBody.model).not.toBe('claude-haiku-3-5');
+  });
+
   it('(c) cross-fallback false → tek ayak (chain yok); HTTP 500 → GatewayError, openai denenmez', async () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'k-anthropic');
     vi.stubEnv('OPENAI_API_KEY', 'k-openai'); // anahtar mevcut olsa bile cross=false → ikinci ayak yok
