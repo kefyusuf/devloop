@@ -244,6 +244,40 @@ describe('loadAppliedPlaybooks (applied playbook → reviewer prompt, I2)', () =
   });
 });
 
+// R18 (faz 4 T2): loadAppliedPlaybooks ÇİFT bağlam döner — playbook-generator staging'i
+// generatorContext()'e girer (- <title> — <note> formatı); reviewerContext davranışı aynen korunur
+// (generator staging reviewer bağlamını kirletmez); boşken 'yok.' sentineli.
+describe('loadAppliedPlaybooks generatorContext (R18)', () => {
+  it('applyEvolution ile yazılan playbook-generator staging → generatorContext başlık+notu taşır; reviewerContext temiz kalır', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo-gen-'));
+    const ctx = makeCtx(dir, { playbookDir: join(dir, '.devloop', 'playbooks') }); // loadAppliedPlaybooks repoPath sözleşmesi
+    const applied: EvolutionCandidate = {
+      evoId: 'evo-gen1', kind: 'playbook-generator', title: 'test-diff blokları tekrarlıyor',
+      content: { note: 'generator kabul kriterlerine test uyumu maddesi eklenebilir' }, sourceEvalId: 'base-eval',
+    };
+    writeShadowCandidates(ctx, [applied]);
+    await applyEvolution(ctx, applied, baseSummary({ evalId: 's', failed: 0 }), baseSummary()); // staging: .devloop/playbooks/evo-gen1.json
+    const p = loadAppliedPlaybooks(dir);
+    const gen = p.generatorContext();
+    expect(gen).toContain('test-diff blokları tekrarlıyor');
+    expect(gen).toContain('generator kabul kriterlerine test uyumu maddesi eklenebilir');
+    expect(gen).toContain('- test-diff blokları tekrarlıyor — generator kabul kriterlerine'); // - <title> — <note> formatı
+    expect(gen).not.toContain('yok.'); // dolu bağlam sentineli taşımaz
+    // reviewer bağlamı generator staging'iyle kirletilmez (I2 davranışı korunur)
+    expect(p.reviewerContext()).toBe('Reviewer playbook önerisi yok.');
+  });
+
+  it('boş dizin → generatorContext sentineli döner; bozuk json fail-soft atılır', () => {
+    // playbooks/ dizini hiç yok
+    expect(loadAppliedPlaybooks(mkdtempSync(join(tmpdir(), 'evo-gen2-'))).generatorContext()).toBe('Generator playbook önerisi yok.');
+    // bozuk json dolu dizinde sentineli bozmaz
+    const dir = mkdtempSync(join(tmpdir(), 'evo-gen3-'));
+    mkdirSync(join(dir, '.devloop', 'playbooks'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'playbooks', 'broken.json'), '{ bozuk', 'utf8');
+    expect(loadAppliedPlaybooks(dir).generatorContext()).toBe('Generator playbook önerisi yok.');
+  });
+});
+
 // (e) Kontrat şema testi: ProposalCreated kind enum'u genişledi — eski kindler korunur, yeniler geçer.
 describe('ProposalCreated kind şeması', () => {
   const env = { event_id: 'e1', schema_version: 1, ts: new Date().toISOString(), run_id: 'r', task_id: 't', actor: 'learning' };

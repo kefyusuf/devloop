@@ -92,7 +92,12 @@ export function buildCli(workDir = process.cwd()): Command {
     ], policy);
     const orchestrator = new Orchestrator({
       store: s,
-      backend: new LlmGeneratorBackend(gateway, mem), // A4: generator dersleri buraya
+      // R18 (faz 4 T2): 3. param — applied playbook-generator staging'i generator prompt'una girer
+      // (loadAppliedPlaybooks çift bağlam: reviewerContext I2 kompozisyonunda, generatorContext burada).
+      // Yalnız üretim yolu (`run`) taşır; evolve --shadow candidatePlaybookProvider ile sınırlı kalır
+      // (faz 3 hükmü aynen — applied playbooklar shadow yargısına karışmaz), review-diff/eval --full
+      // üretim yapan generator kurmaz (reviewerLessons I2 kompozisyonu zaten applied playbook'ludur).
+      backend: new LlmGeneratorBackend(gateway, mem, loadAppliedPlaybooks(repoDir())), // A4: generator dersleri + R18 applied generator playbook'ları
       pipeline, gateway, policy, repoPath: repoDir(), pr: new PrReporter(repoDir()),
     });
     // §7.3 acil durdurma: SIGINT → kill marker dosyası; abort orchestrator'ın mevcut

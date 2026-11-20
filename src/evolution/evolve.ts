@@ -131,19 +131,31 @@ export function candidatePlaybookProvider(ctx: EvolveContext): PlaybookProvider 
 // apply edilen evrim yalnız dosya olarak durur, üretim reviewer'ına ASLA ulaşmaz (bulunan ÖI2).
 // Fail-soft: bozuk/eksik alanlı dosyalar atılır; dizin yoksa veya playbook-reviewer girdisi yoksa
 // 'Reviewer playbook önerisi yok.' döner (CLI kompozisyonu bu mesajı filtreler).
-export function loadAppliedPlaybooks(repoPath: string): PlaybookProvider {
+// R18 (faz 4 T2): ÇİFT bağlam — playbook-generator staging'i generatorContext()'e girer
+// (- <title> — <note> formatı, aynı fail-soft hüküm; boşken 'Generator playbook önerisi yok.'
+// sentineli). reviewerContext davranışı aynen korunur; policy-tweak staging iki bağlamı da
+// ilgilendirmez.
+export function loadAppliedPlaybooks(repoPath: string): {
+  reviewerContext(): string;
+  generatorContext(): string;
+} {
   const dir = join(repoPath, '.devloop', 'playbooks');
-  const notes: string[] = [];
+  const reviewerNotes: string[] = [];
+  const generatorNotes: string[] = [];
   if (existsSync(dir)) {
     for (const f of readdirSync(dir)) {
       if (!f.endsWith('.json')) continue;
       try {
         const c = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Partial<EvolutionCandidate>;
-        if (c.kind !== 'playbook-reviewer') continue; // generator/policy-tweak staging'i reviewer'ı ilgilendirmez
         const note = typeof (c.content as { note?: unknown } | undefined)?.note === 'string' ? (c.content as { note: string }).note : '';
-        notes.push(note ? `- ${c.title} — ${note}` : `- ${c.title ?? f}`);
+        const line = note ? `- ${c.title} — ${note}` : `- ${c.title ?? f}`;
+        if (c.kind === 'playbook-reviewer') reviewerNotes.push(line); // reviewer staging → reviewer satırı
+        else if (c.kind === 'playbook-generator') generatorNotes.push(line); // generator staging → generator satırı
       } catch { /* bozuk playbook dosyası atılır (fail-soft) */ }
     }
   }
-  return { reviewerContext: () => notes.length === 0 ? 'Reviewer playbook önerisi yok.' : notes.join('\n') };
+  return {
+    reviewerContext: () => reviewerNotes.length === 0 ? 'Reviewer playbook önerisi yok.' : reviewerNotes.join('\n'),
+    generatorContext: () => generatorNotes.length === 0 ? 'Generator playbook önerisi yok.' : generatorNotes.join('\n'),
+  };
 }

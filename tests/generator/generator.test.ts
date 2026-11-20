@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { LlmGeneratorBackend, readRepoContext } from '../../src/generator/generator.js';
 import { applyArtifact } from '../../src/generator/apply.js';
+import { loadAppliedPlaybooks } from '../../src/evolution/evolve.js'; // R18 (faz 4 T2): applied generator playbook kaynağı
 import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -62,6 +63,52 @@ describe('LlmGeneratorBackend', () => {
     const base = readRepoContext(dir, ['src/']);
     const backend = new LlmGeneratorBackend(undefined as never); // ctor gateway yok
     await expect(backend.generate(task, { ...base, lessons: '', feedback: [] })).rejects.toThrow('gateway yok');
+  });
+});
+
+// R18 (faz 4 T2): applied playbook-generator staging'i (applyEvolution'un .devloop/playbooks/
+// yazımıyla birebir format) generator prompt'una girer — 'GENERATOR PLAYBOOK' bloğu
+// feedbackBlock'tan ÖNCE; boş/sentinel bağlam prompt'a kirlilik taşımaz.
+describe('LlmGeneratorBackend playbook bağlamı (R18)', () => {
+  const captureGateway = (): { gw: LlmGateway; captured: () => string } => {
+    let captured = '';
+    const gw: LlmGateway = { complete: vi.fn(async (req: { user: string }) => {
+      captured = req.user;
+      return { data: { intent: 'i', rejectedAlternatives: [], testEvidence: 'e', files: [{ path: 'src/math.ts', content: 'export const sum=(a:number,b:number)=>a+b;' }] }, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
+    }) } as unknown as LlmGateway;
+    return { gw, captured: () => captured };
+  };
+  const finding: Finding = { id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, evidence: { file: 'a.ts' }, suggestion: 'unused var' };
+
+  it('applied playbook-generator json → prompt GENERATOR PLAYBOOK başlığı + title/note içeriği taşır; feedbackBlock\'tan önce konumlanır', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpb-'));
+    // applyEvolution staging formatı birebir: .devloop/playbooks/<evoId>.json
+    mkdirSync(join(dir, '.devloop', 'playbooks'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'playbooks', 'evo-gen1.json'), JSON.stringify({
+      evoId: 'evo-gen1', kind: 'playbook-generator', title: 'test-diff blokları tekrarlıyor',
+      content: { note: 'generator kabul kriterlerine test uyumu maddesi eklenebilir' },
+    }), 'utf8');
+    const { gw, captured } = captureGateway();
+    const base = readRepoContext(dir, ['src/']); // .devloop SKIP_DIRS'ta — staging prompt'ın repo bölümüne sızmaz
+    const backend = new LlmGeneratorBackend(gw, undefined, loadAppliedPlaybooks(dir)); // R18: 3. param
+    await backend.generate(task, { ...base, lessons: 'AKTİF DERS: fiil isimleri.', feedback: [finding] });
+    expect(captured()).toContain('GENERATOR PLAYBOOK (insan-onaylı kurallar)');
+    expect(captured()).toContain('test-diff blokları tekrarlıyor');
+    expect(captured()).toContain('generator kabul kriterlerine test uyumu maddesi eklenebilir');
+    // feedbackBlock'tan ÖNCE (kontrat konumu)
+    expect(captured().indexOf('GENERATOR PLAYBOOK')).toBeLessThan(captured().indexOf('ÖNCEKİ TUR BULGULARI'));
+  });
+
+  it('provider yokken VEYA bağlam sentinel\'ken prompt\'ta GENERATOR PLAYBOOK bloğu olmaz', async () => {
+    const { gw, captured } = captureGateway();
+    const dir = mkdtempSync(join(tmpdir(), 'gpb2-'));
+    const base = readRepoContext(dir, ['src/']);
+    await new LlmGeneratorBackend(gw, undefined, undefined).generate(task, { ...base, lessons: '', feedback: [] });
+    expect(captured()).not.toContain('GENERATOR PLAYBOOK');
+    // sentinel bağlam: loadAppliedPlaybooks boş dizin → 'yok.' → blok prompt'a girmez
+    const { gw: gw2, captured: captured2 } = captureGateway();
+    await new LlmGeneratorBackend(gw2, undefined, loadAppliedPlaybooks(dir)).generate(task, { ...base, lessons: '', feedback: [] });
+    expect(captured2()).not.toContain('GENERATOR PLAYBOOK');
   });
 });
 
