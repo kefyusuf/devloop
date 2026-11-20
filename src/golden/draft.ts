@@ -28,35 +28,45 @@ export async function generateGoldenDrafts(args: {
   const drafts: GoldenTask[] = [];
   let written = 0, skipped = 0;
   for (const runId of acceptedRuns(args.store, args.fromRun)) {
-    const picked = args.store.query({ runId, type: 'TaskPicked' }).find((e): e is TaskPickedEvent => e.type === 'TaskPicked');
-    const art = args.store.query({ runId, type: 'ArtifactProduced' }).find((e): e is ArtifactProducedEvent => e.type === 'ArtifactProduced');
-    const pr = args.store.query({ runId, type: 'PRCreated' }).find((e): e is PRCreatedEvent => e.type === 'PRCreated');
-    if (!picked || !art || !pr) { skipped++; continue; }
-    const decisions = args.store.query({ runId, type: 'HumanDecision' }).filter((e): e is HumanDecisionEvent => e.type === 'HumanDecision');
-    const byFinding = new Map(args.store.query({ runId, type: 'FindingEmitted' })
-      .filter((e): e is FindingEmittedEvent => e.type === 'FindingEmitted')
-      .map((e) => [e.event_id, e.payload.finding]));
-    const required = new Set<string>();
-    const forbidden = new Set<string>();
-    for (const d of decisions) {
-      for (const fid of d.payload.parentFindingEventIds) {
-        const f = byFinding.get(fid);
-        if (!f) continue;
-        if (d.payload.reason === 'real-issue-accepted') required.add(f.category);
-        if (d.payload.reason === 'false-positive') forbidden.add(f.category);
+    // I1 (final fix wave, R17 binding): taslak üretimi GÖREV-BAZLIDIR — run'ın TÜM TaskPicked
+    // event'leri gezilir (zarf task_id taşır; orchestrator 'TaskPicked' i task.id ile yazar).
+    // Eski kod run başına yalnız İLK TaskPicked'i seçiyor, ArtifactProduced/PRCreated'i run
+    // düzeyinde arıyor ve HumanDecision'ları TÜM run'dan tek taslağa yansıtıyordu: çok-görevli
+    // kabul koşumunda 2..N görevler taslaksız kalıyor, task 2'nin false-positive reddi task 1'in
+    // forbiddenCategories'ine düşüyordu. Her görevin expected'i YALNIZ kendi kararlarından türer.
+    const picks = args.store.query({ runId, type: 'TaskPicked' }).filter((e): e is TaskPickedEvent => e.type === 'TaskPicked');
+    for (const picked of picks) {
+      const taskId = picked.task_id;
+      const art = args.store.query({ runId, taskId, type: 'ArtifactProduced' }).find((e): e is ArtifactProducedEvent => e.type === 'ArtifactProduced');
+      const pr = args.store.query({ runId, taskId, type: 'PRCreated' }).find((e): e is PRCreatedEvent => e.type === 'PRCreated');
+      if (!art || !pr) { skipped++; continue; }
+      const decisions = args.store.query({ runId, taskId, type: 'HumanDecision' }).filter((e): e is HumanDecisionEvent => e.type === 'HumanDecision');
+      const byFinding = new Map(args.store.query({ runId, taskId, type: 'FindingEmitted' })
+        .filter((e): e is FindingEmittedEvent => e.type === 'FindingEmitted')
+        .map((e) => [e.event_id, e.payload.finding]));
+      const required = new Set<string>();
+      const forbidden = new Set<string>();
+      for (const d of decisions) {
+        for (const fid of d.payload.parentFindingEventIds) {
+          const f = byFinding.get(fid);
+          if (!f) continue;
+          if (d.payload.reason === 'real-issue-accepted') required.add(f.category);
+          if (d.payload.reason === 'false-positive') forbidden.add(f.category);
+        }
       }
+      const task = {
+        // goldenId görev-bazlıdır: taskSpec + o görevin artifact diff'i — görev başına farklıdır.
+        goldenId: createHash('sha256').update(JSON.stringify(picked.payload.taskSpec) + art.payload.artifact.diff).digest('hex').slice(0, 16),
+        taskSpec: picked.payload.taskSpec,
+        fixtureDiff: art.payload.artifact.diff,
+        expected: {
+          gatesPass: true, // PRCreated yalnız gates pass sonrası açılır (A2)
+          requiredFindings: [...required].map((c) => ({ category: c })),
+          forbiddenCategories: [...forbidden],
+        },
+      };
+      drafts.push(GoldenTaskSchema.parse(task));
     }
-    const task = {
-      goldenId: createHash('sha256').update(JSON.stringify(picked.payload.taskSpec) + art.payload.artifact.diff).digest('hex').slice(0, 16),
-      taskSpec: picked.payload.taskSpec,
-      fixtureDiff: art.payload.artifact.diff,
-      expected: {
-        gatesPass: true, // PRCreated yalnız gates pass sonrası açılır (A2)
-        requiredFindings: [...required].map((c) => ({ category: c })),
-        forbiddenCategories: [...forbidden],
-      },
-    };
-    drafts.push(GoldenTaskSchema.parse(task));
   }
   mkdirSync(args.draftsDir, { recursive: true });
   for (const d of drafts) {
