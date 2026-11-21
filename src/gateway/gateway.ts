@@ -12,7 +12,13 @@ export type { LlmGateway, TokenUsage } from './types.js';
 export class AnthropicGateway implements LlmGateway {
   private readonly apiKey: string;
   constructor(private readonly policy: Policy, private readonly fetchImpl: typeof fetch = fetch, private readonly sleepImpl: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))) {
-    this.apiKey = process.env[policy.llm.provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'LLM_API_KEY'] ?? '';
+    // R26f (faz 5 T6) düzeltme: anahtar seçimi provider-koşulluydu (`provider === 'anthropic' ?
+    // ANTHROPIC_API_KEY : LLM_API_KEY`) — openai birincil + crossProviderFallback zincirinde
+    // anthropic ikinci ayak LLM_API_KEY'i okuyordu; oysa createGateways ayak kapısı ANTHROPIC_API_KEY
+    // varlığına bakar → kurulan ayak anahtarsız kalıyor, openai→anthropic fallback HİÇ çalışmıyordu.
+    // LLM_API_KEY kullanımı repo genelinde yok (yalnız v1 plan dokümanı) — daima ANTHROPIC_API_KEY.
+    // Fail-closed aynen: anahtar yoksa complete() GatewayError fırlatır.
+    this.apiKey = process.env.ANTHROPIC_API_KEY ?? '';
   }
 
   async complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; runId: string; model?: string }): Promise<{ data: T; usage: TokenUsage }> {

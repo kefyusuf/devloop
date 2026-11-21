@@ -132,6 +132,29 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     await emitTestDiff('eval-shadow-2', 'ts2');
     expect(generateEvolutionCandidates(ctx, baseSummary())[0].evoId).toBe(out[0].evoId);
   });
+
+  // R26g (faz 5 T6): eval- prefix'li koşumlar (production eval dâhil — configSnapshot'ta 'candidate'
+  // YOK) sinyale girmez — shadow kuralının genişletmesi; production eval koşumları sinyali kirletmez.
+  // evalRunner runId sözleşmesi `eval-<evalId>` olduğundan run_id prefix'i production/shadow ayrımı
+  // yapmaksızın TÜM eval koşumlarını kapsar; sayım değişmezse evoId seed'i de değişmez.
+  it("eval- prefix'li production eval koşumu test-diff bulgusu aday sayımına girmez", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo3c-'));
+    const ctx = makeCtx(dir);
+    const emitTestDiff = async (run: string, taskId: string) => {
+      const art = await ctx.store.append('ArtifactProduced', run, taskId, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
+      await ctx.store.append('FindingEmitted', run, taskId, 'risk-triage', { finding: { id: `f-${taskId}`, stage: 'risk-triage', category: 'test-diff', severity: 'optional', confidence: 1, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+    };
+    await emitTestDiff('r-prod-1', 't1');
+    await emitTestDiff('r-prod-2', 't2');
+    const out = generateEvolutionCandidates(ctx, baseSummary());
+    expect(out).toHaveLength(1);
+    // production eval koşumu (eval- run_id, configSnapshot'ta 'candidate' yok) + bulgusu → sayım DEĞİŞMEZ
+    await ctx.store.append('EvalRun', 'eval-prod-1', '-', 'eval', { evalId: 'pe1', goldenCount: 1, passed: 0, failed: 1, score: 0, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    await emitTestDiff('eval-prod-1', 'te1');
+    const after = generateEvolutionCandidates(ctx, baseSummary());
+    expect(after).toHaveLength(1);
+    expect(after[0].evoId).toBe(out[0].evoId); // eval- koşumu sayıma girseydi seed `test-diff:3` → evoId değişirdi
+  });
 });
 
 describe('applyEvolution (A5 — yalnız playbook staging + event)', () => {

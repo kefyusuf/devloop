@@ -147,6 +147,19 @@ describe('parseDiff', () => {
     const d = ['--- a/y.ts\t', '+++ b/y.ts\t', '@@ -1 +1,2 @@', '+const z=3;'].join('\n');
     expect(parseDiff(d)).toEqual([{ path: 'y.ts', addedContent: 'const z=3;' }]);
   });
+
+  // R26e (faz 5 T6): reDevNull da trailing whitespace toleranslı — malformed diff'te `+++ /dev/null `
+  // (silinen dosya başlığı) eski davranışta başlık sayılmıyor, hunk içinde İÇERİK sanılıp `++ /dev/null`
+  // olarak önceki dosyaya akıyordu (bogus içerik); `[ \t]*$` toleransı /dev/null skip'ini ws'li satırda
+  // da korur (R22 header toleransıyla aynı aile; CRLF zaten satır bazında strip).
+  it('R26e: trailing-space `+++ /dev/null ` silinen-dosya başlığı — bogus içerik önceki dosyaya akmaz', () => {
+    const d = [
+      '--- a/keep.ts', '+++ b/keep.ts', '@@ -1 +1,2 @@', ' const a=1;', '+const b=2;',
+      'diff --git a/gone.ts b/gone.ts', 'deleted file mode 100644',
+      '--- a/gone.ts', '+++ /dev/null ', '@@ -1 +0,0 @@', '-gone();',
+    ].join('\n');
+    expect(parseDiff(d)).toEqual([{ path: 'keep.ts', addedContent: 'const b=2;' }]);
+  });
 });
 
 describe('review-diff exit kodları', () => {

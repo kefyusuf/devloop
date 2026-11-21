@@ -40,10 +40,14 @@ export function generateEvolutionCandidates(ctx: EvolveContext, baseline: EvalSu
   const shadowRunIds = new Set(ctx.store.query({ type: 'EvalRun' })
     .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun' && 'candidate' in e.payload.configSnapshot)
     .map((e) => e.run_id));
-  const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !shadowRunIds.has(e.run_id));
+  // R26g (faz 5 T6): eval- prefix'li run_id'ler (production eval dâhil) de sinyal DIŞI — shadow
+  // kuralının genişletmesi. evalRunner runId sözleşmesi `eval-<evalId>` olduğundan prefix, aday
+  // etiketli olmayan production eval koşumlarını da kapsar (test-diff sayımı + karar bucket'ları).
+  const signalExcluded = (runId: string): boolean => shadowRunIds.has(runId) || runId.startsWith('eval-');
+  const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !signalExcluded(e.run_id));
   const findings = ctx.store.query({ type: 'FindingEmitted' })
     .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted') // union daraltma (strict tsc — learn.ts ile aynı desen)
-    .filter((e) => !shadowRunIds.has(e.run_id));
+    .filter((e) => !signalExcluded(e.run_id));
   const byFinding = new Map<string, string>(findings.map((e): [string, string] => [e.event_id, e.payload.finding.category]));
   const buckets = new Map<string, { rejects: string[]; runs: Set<string>; decisionIds: string[] }>();
   for (const d of decisions) {

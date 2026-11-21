@@ -246,13 +246,18 @@ describe('Faz 3 değişmezleri (R15)', () => {
     // 2. üretim sinyal koşumu: gerçek CI yolu (runReviewDiff) — test dosyası diff'i test-diff bulgusu
     // ayrı run_id'de (ci-*) düşürür → iki farklı koşumda test-diff → playbook-generator adayı.
     // (İki runEval art arda Date.now() çakışması riskine karşı deterministik yol budur.)
+    // R26g hüküm güncellemesi (faz 5 T6): eval- prefix'li koşumlar (baseline runEval dâhil) artık
+    // sinyal SAYILMAZ — eski davranışta baseline eval koşumunun test-diff bulgusu + 1 ci koşumu
+    // eşiği dolduruyordu; şimdi İKİ ci-* sinyal koşumu gerekir.
     const ciStages = GATES5.map((n) => fakeGate(n));
-    await runReviewDiff({
-      diffText: TESTFILE_DIFF, taskSpecId: 'td-signal',
+    const ciSignalRun = (taskSpecId: string) => runReviewDiff({
+      diffText: TESTFILE_DIFF, taskSpecId,
       gatePipeline: new ReviewPipeline(ciStages, { ...base, gates: GATES5, advisory: [] }),
       fullPipeline: new ReviewPipeline([...ciStages, { name: 'llm-ensemble', kind: 'advisory', evaluate: async () => ({ status: 'pass', findings: [], durationMs: 1 }) }], { ...base, gates: GATES5, advisory: ['llm-ensemble'] }),
       store, policy: base, repoPath: repo,
     });
+    await ciSignalRun('td-signal');
+    await ciSignalRun('td-signal-2');
 
     const ctx: EvolveContext = {
       store,

@@ -39,6 +39,8 @@ const anthropicResponse = (text: string, status = 200) => new Response(
 const openaiResponse = (text: string, status = 200) => new Response(
   JSON.stringify({ choices: [{ message: { content: text } }], usage: { prompt_tokens: 100, completion_tokens: 50 } }), { status });
 const fallbackPolicy = { ...anthropicPolicy, llm: { ...anthropicPolicy.llm, crossProviderFallback: true } };
+// R26f (faz 5 T6): openai birincil + anthropic ikinci ayak (cross-fallback ayna polisi)
+const openaiFallbackPolicy = { ...openaiPolicy, llm: { ...openaiPolicy.llm, crossProviderFallback: true } };
 
 describe('createGateways + ChainedGateway (R21 cross-provider fallback)', () => {
   afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
@@ -131,6 +133,46 @@ describe('createGateways + ChainedGateway (R21 cross-provider fallback)', () => 
     expect(message).toContain('HTTP 503'); // openai ayak hatası
     expect(message).toContain('claude-sonnet-4-5'); // anthropic ayak model raporu
     expect(message).toContain('gpt-4.1'); // openai ayak model raporu
+  });
+
+  // R26f (faz 5 T6): OpenAI HTTP-error → fallback (faz 3 T6 kalıntısı). OpenAI adapter non-2xx'i
+  // (openai.ts: `!res.ok` → lastError='HTTP <status>' → sonunda GatewayError) GatewayError'a
+  // klasifiye eder; ChainedGateway ayak hatasını yakalayıp sonraki ayağa geçer. (b)'nin aynası —
+  // ayaklar ters: openai birincil 500 → anthropic ikinci ayak cevabı kazanır.
+  it('(f) R26f: openai ayak HTTP 500 → anthropic ayak fallback başarılı (openai-primary cross-fallback)', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'k-anthropic');
+    vi.stubEnv('OPENAI_API_KEY', 'k-openai');
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return url.includes('api.openai.com') ? openaiResponse('x', 500) : anthropicResponse('{"answer":"ok"}');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const gateway = new ChainedGateway(createGateways(openaiFallbackPolicy));
+    const r = await gateway.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' });
+    expect(r.data.answer).toBe('ok');
+    expect(r.usage.inputTokens).toBe(100); // usage başarılı ayaktan (anthropic)
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('api.openai.com'))).toBe(true);
+    expect(urls.some((u) => u.includes('api.anthropic.com'))).toBe(true);
+  });
+
+  // R26f openai-primary symmetry (faz 5 T6): zincir openai birincilken de çalışır — (b)'de anthropic
+  // birincil direkt başarılıydı; ayna: openai birincil başarılı → anthropic ikinci ayak HİÇ çağrılmaz
+  // (fallback tetiklenmez), cevap openai ayağından gelir.
+  it('(g) R26f openai-primary symmetry: openai birincil başarılı → anthropic ikinci ayak hiç çağrılmaz', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'k-anthropic');
+    vi.stubEnv('OPENAI_API_KEY', 'k-openai');
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return url.includes('api.openai.com') ? openaiResponse('{"answer":"ok-openai"}') : anthropicResponse('{"answer":"ok-anthropic"}');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const gateway = new ChainedGateway(createGateways(openaiFallbackPolicy));
+    const r = await gateway.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' });
+    expect(r.data.answer).toBe('ok-openai'); // birincil ayak cevabı
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.every((u) => u.includes('api.openai.com'))).toBe(true);
+    expect(urls.some((u) => u.includes('api.anthropic.com'))).toBe(false);
   });
 
   it('hiçbir ayak yok (env tamamen temiz) → createGateways [] + ChainedGateway([]) complete GatewayError fırlatır', async () => {
