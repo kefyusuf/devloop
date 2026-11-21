@@ -9,8 +9,8 @@ import { LlmEnsembleStage } from '../../src/pipeline/stages/llmEnsemble.js';
 import { SecretScanStage } from '../../src/pipeline/stages/secretScan.js';
 import { MutationStage } from '../../src/pipeline/stages/mutationStage.js';
 import { parseDiff, runReviewDiff } from '../../src/shell/reviewDiff.js';
-import { runEval } from '../../src/eval/evalRunner.js';
-import { generateEvolutionCandidates, applyEvolution, type EvolveContext } from '../../src/evolution/evolve.js';
+import { runEval, type EvalSummary } from '../../src/eval/evalRunner.js';
+import { generateEvolutionCandidates, applyEvolution, generateLlmMutations, type EvolveContext } from '../../src/evolution/evolve.js';
 import { loadConfig, type Policy } from '../../src/config/config.js';
 import { createGateways, ChainedGateway } from '../../src/gateway/factory.js';
 import { AnthropicGateway, GatewayError } from '../../src/gateway/gateway.js';
@@ -519,6 +519,42 @@ llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costP
   });
 });
 
+// Faz 5 değişmezleri (R28): her faz-5 kabul kriteri değişmez olarak burada pinlenir. Referanslar:
+// decide fail-closed → tests/cli/cli.test.ts ('decide: eşleşen TaskPicked yok + --run yok →
+// fail-closed hata'); E2E zinciri → tests/e2e/decisionPath.test.ts (decide auto-resolve → golden
+// draft → accept → eval score 100). Aşağıdaki değişmez yalnız invariants düzeyinde eksik kalandır.
+describe('Faz 5 değişmezleri (R28)', () => {
+  // (c) R26d değişmezi — evoId key-order duyarlılığı: LLM mutasyon taslak seed'i canonicalJson
+  // üzerinden hesaplanır (evolve.ts). T5 birimleri canonicalJson string'i (tests/util/
+  // canonicalJson.test.ts) ve goldenId key-order'ını (tests/golden/draft.test.ts R26d) kanıladı;
+  // bu değişmez zincirin son halkasını (evoId) pinler: aynı mutasyon içeriği farklı key-sırasıyla
+  // gelirse taslak AYNI evoId'yi alır — JSON.stringify'a dönen regresyon staging dosya adını
+  // değiştirir ve burada yakalanır.
+  it('canonical JSON değişmezi: aynı LLM mutasyon içeriği farklı key-sırasıyla → aynı evoId', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'inv-f5evo-'));
+    const ctx: EvolveContext = {
+      store: new VerdictStore(join(dir, 'events.jsonl')),
+      playbookDir: join(dir, 'playbooks'),
+      candidateDir: join(dir, 'candidates'),
+      goldenCount: 60, // l3Active: eşik üstü — LLM kapısı (Kapı 1) geçilir
+      l3MinGoldenTasks: base.l3MinGoldenTasks,
+    };
+    // baseline/shadow ÖZET — gerileme kapısı geçilsin diye failed 0/0 (kapı kanıtı değil, evoId kanıtı)
+    const sum = (evalId: string): EvalSummary => ({ evalId, goldenCount: 60, passed: 60, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' }, l3Active: true });
+    const mkGateway = (content: Record<string, unknown>): LlmGateway => ({
+      complete: vi.fn(async () => ({
+        data: { mutations: [{ kind: 'playbook-reviewer', title: 'kanıt eşiği yükselt', content, rationale: 'tekrarlayan fp' }] },
+        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 },
+      })),
+    } as unknown as LlmGateway);
+    const a = await generateLlmMutations({ ctx, gateway: mkGateway({ note: 'n', category: 'perf' }), baseline: sum('base-eval'), shadowEval: sum('shadow-eval') });
+    const b = await generateLlmMutations({ ctx, gateway: mkGateway({ category: 'perf', note: 'n' }), baseline: sum('base-eval'), shadowEval: sum('shadow-eval') });
+    expect(a).toHaveLength(1);
+    expect(b[0].evoId).toBe(a[0].evoId); // key-sırası farkı taslak kimliğini değiştirmez (canonicalJson seed)
+    expect(a[0].evoId).toMatch(/^[0-9a-f]{16}$/); // non-vacuous: seed gerçekten akar, deterministik hex
+  });
+});
+
 // Düzeltme 9 (opsiyonel — dahil edildi): README/CLI fiil hizası koruması; ucuz, gürültü değil.
 describe('README hizası', () => {
   it('README, CLI fiilleriyle hizalı (run/decide/learn/status + faz 3: eval/evolve + faz 4: golden/evolve --llm)', () => {
@@ -534,5 +570,21 @@ describe('README hizası', () => {
     expect(readme).toContain('devloop golden');
     expect(readme).toContain('--llm');
     expect(readme).toContain('crossProviderFallback');
+  });
+
+  // R27 (faz 5 T7): L3 aktivasyon görünürlüğü README'de dokümante — 'faz 5 kapanışında güncellenir'
+  // hükmünün kanıtı; R28 kabul checklist'i de README'de pinli (bölüm silinirse test kırılır).
+  it('README faz 5: decide bağlantısı + status alanları + kabul checklist dokümante (R27/R28)', () => {
+    const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
+    expect(readme).toContain('## Faz 5');
+    expect(readme).toContain('auto-resolve'); // decide → run bağlantısı (R25)
+    expect(readme).toContain('goldenCount'); // R27 aktivasyon alanları
+    expect(readme).toContain('goldenDrafts');
+    expect(readme).toContain('l3Active');
+    expect(readme).toContain('lastEvalScore');
+    expect(readme).toContain('l3MinGoldenTasks'); // L3 aktivasyon yolu eşiği
+    expect(readme).toContain('canonical JSON'); // SHIP batch özeti (R26d)
+    expect(readme).toContain('typecheck:tests'); // tsconfig.test.json strict komutu (R26h/R28e)
+    expect(readme).toContain('Kabul checklist (R28)'); // kabul kanıt haritası
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { REVIEWER_DERSI_YOK, GENERATOR_PLAYBOOK_YOK } from '../../src/shell/sentinels.js';
+import { REVIEWER_DERSI_YOK, GENERATOR_PLAYBOOK_YOK, REVIEWER_PLAYBOOK_YOK } from '../../src/shell/sentinels.js';
 import { composeReviewerLessons } from '../../src/shell/composeLessons.js';
 import { LlmGeneratorBackend, readRepoContext } from '../../src/generator/generator.js';
 import { loadAppliedPlaybooks } from '../../src/evolution/evolve.js';
@@ -29,12 +29,15 @@ describe('shared sentinels (R26a — değer pin + drift koruması)', () => {
   it('değer pin: sabitler birebir bu literallere eşit (sentinels.ts tek kaynak)', () => {
     expect(REVIEWER_DERSI_YOK).toBe('Reviewer dersi yok.');
     expect(GENERATOR_PLAYBOOK_YOK).toBe('Generator playbook önerisi yok.');
+    expect(REVIEWER_PLAYBOOK_YOK).toBe('Reviewer playbook önerisi yok.'); // T2 review: doğrudan pin eksikti
   });
 
   it('drift koruması: composeReviewerLessons boş kompozisyon → REVIEWER_DERSI_YOK (sabit üzerinden)', () => {
+    // Üretim yolu (evolve.ts playbooks.reviewerContext boşken REVIEWER_PLAYBOOK_YOK döner) aynen:
+    // ikinci kaynak sabiti döner → 'yok.' satırı per-line filtreye takılır, DERSI_YOK kalır.
     const out = composeReviewerLessons([
       { reviewerContext: () => REVIEWER_DERSI_YOK },
-      { reviewerContext: () => 'Reviewer playbook önerisi yok.' },
+      { reviewerContext: () => REVIEWER_PLAYBOOK_YOK },
       { reviewerContext: () => '' },
     ]).reviewerContext();
     expect(out).toBe(REVIEWER_DERSI_YOK);

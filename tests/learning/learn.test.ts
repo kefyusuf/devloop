@@ -48,6 +48,7 @@ describe('confirmCandidate', () => {
     const [c] = generateCandidates(store);
     const mem = new LessonMemory(store, join(dir, 'lessons.md'));
     const ev = await confirmCandidate(store, mem, c);
+    expect(ev.type).toBe('LessonLearned'); // daraltma non-vacuous (T7 review): yanlış tip sessiz geçemez
     // hüküm: tsconfig.test kapsamı — union daraltma (aynen evolve.test.ts desen)
     if (ev.type !== 'LessonLearned') return; // union daraltma
     expect(ev.payload.status).toBe('active');
