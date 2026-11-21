@@ -72,27 +72,18 @@ export interface MutationRunnerDesc {
 }
 export type MutationRunner = (desc: MutationRunnerDesc) => Promise<ToolOutput>;
 
-/** stryker host-mode çözümleme alt yolu (scoped pkg ilk İKİ segment — R3 eki). */
-const STRYKER_SUBPATH = '@stryker-mutator/core/bin/stryker.js';
-
 /**
- * R20 (faz 4 T5): default runner.
- * - docker mod: runToolDockerAware — dockerizeSpawn (worktree mount + orijinal node_modules :ro
- *   çift mount, --network none, konteyner içi `npx stryker ...`) ile stryker hedef reponun
- *   KENDİ toolchain'iyle konteynerde koşar. Faz 3.1 fail-closed guard'ı KALDIRILDI (R13 Docker-yok
- *   abortu aktivasyon kapısında aynen sürer); sessiz host-run yok.
- * - host mod: mevcut yol AYNEN — resolveBin + runTool. Bilinçli olarak runToolDockerAware'a
- *   devredilmedi: mevcut host-mode testler adapter.resolveBin/runTool mock'larıyla bu kesitte
- *   çalışmaya devam eder (hüküm: host-mode default testler bozulmaz); davranış birebir aynıdır.
+ * R20 (faz 4 T5) → R26c (faz 5 T4): default runner — TEK tool-run seam. Her iki mod da
+ * runToolDockerAware'a delege (docker: dockerizeSpawn — worktree mount + orijinal node_modules
+ * :ro çift mount, --network none, konteyner içi `npx stryker ...`; faz 3.1 fail-closed guard'ı
+ * KALDIRILDI, R13 Docker-yok abortu aktivasyon kapısında aynen sürer; sessiz host-run yok.
+ * host: resolveBin + runTool — faz 3 T5'ten beri duplike olan host çözümleme konsolide edildi;
+ * STRYKER_SUBPATH duplikesi de kalktı — PKG_SUBPATH tek kaynak). hostSeam olarak stage'in KENDİ
+ * import referansları geçirilir: host-mode testler adapter.resolveBin/runTool mock'larıyla bu
+ * kesitte çalışmaya devam eder (hüküm: host-mode default testler bozulmaz); davranış birebir aynıdır.
  */
-const defaultRunner: MutationRunner = (desc) => {
-  if (desc.policy.sandbox.mode === 'docker') {
-    return runToolDockerAware(desc.repoPath, desc.originalRepoPath, desc.policy, desc.pkg, desc.args, desc.timeoutMs);
-  }
-  const bin = resolveBin(desc.repoPath, STRYKER_SUBPATH);
-  if (!bin) throw new Error(`${desc.pkg} çözümlenemedi (fail-closed)`);
-  return runTool(desc.repoPath, bin, desc.args, desc.timeoutMs);
-};
+const defaultRunner: MutationRunner = (desc) =>
+  runToolDockerAware(desc.repoPath, desc.originalRepoPath, desc.policy, desc.pkg, desc.args, desc.timeoutMs, { resolveBin, runTool });
 
 export class MutationStage implements ReviewStage {
   readonly name = 'mutation-testing';
