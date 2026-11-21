@@ -1,7 +1,7 @@
 # AI Geliştirme Döngüsü Sistemi — Tasarım Dokümanı (Spec)
 
 - **Tarih:** 2026-11-18
-- **Durum:** v1 + Faz 2 + Faz 3 + Faz 4 tamamlandı ve main'e merge edildi (44aa6f9, 267+1skip); Revizyon 5 (faz 5) tasarım onay aşamasında
+- **Durum:** v1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 tamamlandı ve main'e merge edildi (5e84614, 296+1skip); Revizyon 6 (faz 6) tasarım onay aşamasında
 - **Çalışma adı:** `devloop` *(placeholder — karar kutusu 9.3)*
 - **Ölçek:** Mimari (architectural) — yeni sistem, yeşil alan
 
@@ -519,3 +519,39 @@ Faz 4 tamamlandı (merge 44aa6f9, 267+1skip). Faz 5 kapsamı: **B (R25–R29)** 
 ### R29 — Bilinçli ertelemeler (faz 6+)
 
 Multi-repo eval; L4/L5 (fine-tuning, self-play); policy-hot-reload; golden draft otomatik-accept; sandbox'ın LLM spawn'larına genişletmesi; 'yok.' filter'ın LLM içerik üretimine karşı semantic analiz yükseltmesi (per-line substring faz 5 kontratı).
+
+---
+
+## Revizyon 6 — Faz 6: Multi-repo Eval, Hijyen Batch ve Canlı Doğrulama (2026-11-21)
+
+Faz 5 tamamlandı (merge 5e84614, 296+1skip). Faz 6 kapsamı: **B (R30–R34)** — hijyen batch + canlı doğrulama denemesi + multi-repo eval. Hükümler: kapsam B varsayılan onay; **Yaklaşım 1 golden set agregasyonu** hükümlü (per-repo subprocess ve cross-repo genelleme red/backlog); **L3 kapısı bu fazda değişmez** (evolve eşiği kendi-repo golden seti üzerinden kalır — birleşik set ≥ eşik kapıyı açmaz; kapı genişletmesi ayrı, ölçülmüş bir karardır). R29'un YAGNI/contre kalemleri (policy-hot-reload — CLI per-invocation modeli zaten fresh okur; golden otomatik-accept — insan küratörlüğü ilkesi; sandbox LLM spawn genişletmesi; 'yok.' semantic yükseltme; L4/L5 — "uzak hedef; tasarlanmaz") spec'te kalır, bu faza alınmaz.
+
+### R30 — Multi-repo eval (golden set agregasyonu)
+
+`devloop eval --repos <p1,p2,...>`: virgülle ayrık hedef repo yolları. `--repos` verilmemişse bugünkü tek-repo davranış **sıfır değişiklik**.
+
+- **Fail-closed girişler:** var olmayan yol → hata; hiçbir hedef repoda golden task yok → hata (boş koşum anlamsız — sessiz skor-0 raporu değil). Bir repoda golden yokken diğerlerinde varsa o repo aggregate'e 0 task ile katılır ve perRepo'da açıkça raporlanır (sessizlik yok).
+- **Koşum:** her hedef repo için per-repo stage/adapter kurulumu (`TypeScriptAdapter(effPolicy, repo)`, `MutationStage(effPolicy, undefined, repo)`, benzeri) — mevcut `runEval` repo-parametrelidir, döngü dışa açılır. `--candidate` tüm hedeflere aynı aday policy'yi uygular; `--full` gateway'i repo-bağımsız tek kurar. **Donmuş yargıcı tutarlılığı (I2 hükmü aynen):** reviewerLessons orchestrator kompozisyonundan — her repo aynı yargıçla ölçülür; hedef repo'nun kendi lessons/playbook'ları karışmaz.
+- **Kanıt:** hedef repo store'ları **salt-okunur** (hiçbir yazım yok); orchestrator store'una **repo başına bir EvalRun** — payload'a additive optional `repo?: string` alanı eklenir (tek-repo koşumda tanımsız; geriye-uyumlu). TaskPicked/ArtifactProduced/DecisionMade zinciri mevcut eval kalıbını izler; validateChain orchestrator store içinde bütünlüklü kalır. runId kuralı aynı (`eval-<evalId>`) — eval- sinyal filtresiyle otomatik uyumlu.
+- **Rapor:** CLI JSON aggregate — `perRepo[]` (repo, goldenCount, passed, failed, score, invalid[], l3Active) + `aggregate` (totalTasks, totalPassed, totalFailed, weightedScore = Σ(scoreᵢ·nᵢ)/Σnᵢ, mergedInvalid[]). `l3Active` per-repo kendi eşiğiyle hesaplanır; aggregate'te l3Active alanı **yok** (L3 kapı hükmü).
+
+### R31 — Hijyen batch (faz 5 review kalıntıları)
+
+1. **reDel ws toleransı:** `/^--- \/dev\/null[ \t]*$/` — reDevNull (faz 5 T6) ile simetrik; trailing-ws'li `--- /dev/null ` satırı artık header adayı. Pin testi.
+2. **Prompt-bağlam filtresi:** `generateLlmMutations`'ın prompt context'i `signalExcluded`'dan geçer — `eval-` prefix'li koşum bulguları LLM prompt satırlarına sızmaz (R26g'nin kapsam dışı bıraktığı nokta; hijyen). Test: eval- koşumu pattern satırına girmez.
+3. **policyHash → canonicalJson:** orchestrator/evalRunner/reviewDiff'teki üç policyHash seed'i `canonicalJson(policy)`'ye geçer — amaç key-order determinizmi. **Bilinen davranış değişikliği:** policy çok-anahtarlı olduğundan hash DEĞERLERİ değişir; comparedTo karşılaştırmaları her iki tarafta da yeniden hesaplandığından tutarlı kalır; hash-pin'li testler hüküm-notlu güncellenir.
+4. **goldenDrafts sayaç → shared helper:** cli.ts'teki inline `*.task.json` sayacı ile `golden list` filtresi tek kapıya konsolide edilir (T7 minor).
+
+### R32 — Canlı doğrulama ortam denetimi (5d/5e)
+
+Yeni kod yok. SDD içinde ortam denetimi task'ı: `OPENAI_API_KEY` mevcutsa cross-provider canlı koşum testi (`CROSS_PROVIDER_LIVE=1`), Docker daemon mevcutsa `DEVLOOP_DOCKER=1` gerçek Stryker-in-container testi koşulur ve sonucu raporlanır; mevcut değilse ortam raporuyla faz kapanır (skip mekanizması zaten mevcut — fail-open değil, bilinçli atlanan ortam doğrulamasıdır ve raporlanır).
+
+### R33 — Test stratejisi ve kabul kriterleri (faz 6)
+
+- Mevcut 296+1skip bozulmaz (hüküm notlu güncellemeler hariç). Yeni testler: multi-repo eval e2e (fixture repo'lar: birleşik aggregate aritmetiği + hedef-store dokunulmazlığı + fail-closed girişler + tek-repo geriye-uyumluluk); reDel ws pin; prompt-context eval- dışlama; policyHash key-order determinizmi + pin güncellemeleri; goldenDrafts helper davranışı.
+- **Kabul kriterleri:** `--repos`'suz eval birebir aynı davranış; multi-repo aggregate aritmetiği doğru; hedef store'lar yazım izsiz; prompt bağlamında eval- bulgusu yok; policyHash key-order'dan bağımsız; README faz 6 bölümü + kabul checklist (R28 formatında).
+- R32 denetimi faz kapanış raporunda ayrı satır.
+
+### R34 — Bilinçli ertelemeler (faz 7+)
+
+Cross-repo genelleme testi (repo A golden'ı repo B bağlamında — genelleme ölçümü, veri genişletme değil); L3 kapısının birleşik multi-eval goldenCount ile genişletilmesi (ayrı, ölçülmüş karar); R29'un kalan YAGNI/contre kalemleri aynen.
