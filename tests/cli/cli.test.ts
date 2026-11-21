@@ -3,22 +3,83 @@ import { buildCli } from '../../src/shell/cli.js';
 import { VerdictStore } from '../../src/store/store.js';
 import { generateProposals } from '../../src/learning/learn.js';
 import { loadGoldenTasks } from '../../src/eval/golden.js';
+// hüküm: tsconfig.test kapsamı (R26h) — Extract daraltması için DevloopEvent tip importu
+import type { DevloopEvent } from '../../src/contracts/events.js';
+// hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcıları
+import { queryTyped } from '../helpers/events.js';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 describe('CLI', () => {
+  // hüküm (faz 5 T1, R25): decide artık gerçek run bağlantısı kurar — auto-resolve (son eşleşen
+  // TaskPicked'in run_id'si) çözülemezse fail-closed hata (sessiz 'manual' yazımı YOK). Bu testin
+  // seed'inde TaskPicked YOKTUR (kontratı HumanDecision payload alanlarıdır, run çözümü değil);
+  // explicit '--run r1' ile karar kanıtı aynen yazılır — payload sözleşmesi değişmedi.
   it('decide → HumanDecision (parent bulgu ile)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli-'));
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     await store.append('RunStarted', 'r1', 't1', 'o', { configSnapshot: {} });
-    await store.append('FindingEmitted', 'r1', 't1', 'llm-reviewer', { finding: { id: 'f1', stage: 'llm-reviewer', category: 'security', severity: 'required', confidence: 0.9, evidence: { file: 'a.ts' } }, parentArtifactEventId: 'x' });
+    // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+    await store.append('FindingEmitted', 'r1', 't1', 'llm-reviewer', { finding: { id: 'f1', stage: 'llm-reviewer', category: 'security', severity: 'required', confidence: 0.9, corroborated: false, evidence: { file: 'a.ts' } }, parentArtifactEventId: 'x' });
     // Düzeltme (plan hatası): commander 12'de { from: 'user' } TÜM argv'yı kullanıcı argümanı sayar;
     // ['node', 'devloop', ...] + from:'user' → "unknown command 'node'" (kanıt: task-13-report.md).
     // from:'node' (varsayılan) argv[0..1]'i kırpar — üretimdeki parseAsync(process.argv) ile aynı kural.
-    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--reject', '--reason', 'false-positive', '--findings', 'f1', '--note', 'yanlış alarm']);
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--run', 'r1', '--reject', '--reason', 'false-positive', '--findings', 'f1', '--note', 'yanlış alarm']);
     const d = store.query({ type: 'HumanDecision' });
     expect(d[0].payload).toMatchObject({ decision: 'reject', reason: 'false-positive' });
+    expect(d[0].run_id).toBe('r1'); // --run override: aynen kullanılır (auto-resolve atlanır)
+  });
+
+  // R25 (faz 5 T1): decide → GERÇEK run bağlantısı. Auto-resolve: --run yoksa store'daki SON
+  // eşleşen TaskPicked'in run_id'si; fail-closed: çözülemezse hata ('manual' sessiz yazımı YOK);
+  // '--run manual' tek explicit 'manual' yolu. L3 veri yolu (golden draft) böylece gerçek decide
+  // kararlarıyla kapanır — E2E kanıtı: tests/e2e/decisionPath.test.ts.
+  it('decide: runId otomatik çözülür (son TaskPicked)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r25-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const taskSpec = { id: 't1', description: 'sum ekle', acceptanceCriteria: ['sum(2,3)===5'], filesScope: [] };
+    await store.append('RunStarted', 'r1', '-', 'o', { configSnapshot: {} });
+    await store.append('TaskPicked', 'r1', 't1', 'orchestrator', { taskSpec });
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']);
+    const d = store.query({ type: 'HumanDecision' });
+    expect(d[0].run_id).toBe('r1');
+    // son TaskPicked: aynı taskSpec id'li YENİ bir koşum (r2) sonradan yazıldı → auto-resolve EN
+    // YENİ eşleşmeyi seçer (iki koşum r1 ve r2 — '.pop()' dosya sırasındaki son kayıt)
+    await store.append('RunStarted', 'r2', '-', 'o', { configSnapshot: {} });
+    await store.append('TaskPicked', 'r2', 't1', 'orchestrator', { taskSpec });
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']);
+    const d2 = store.query({ type: 'HumanDecision' });
+    expect(d2).toHaveLength(2);
+    expect(d2[1].run_id).toBe('r2');
+    expect(d2[1].payload).toMatchObject({ decision: 'accept', reason: 'real-issue-accepted' });
+  });
+  it('decide: --run override', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r25o-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await store.append('RunStarted', 'r1', '-', 'o', { configSnapshot: {} });
+    await store.append('TaskPicked', 'r1', 't1', 'orchestrator', { taskSpec: { id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] } });
+    // eşleşen TaskPicked VAR (auto-resolve 'r1' verirdi) — --run r9 AYNEN kullanılır
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--run', 'r9', '--reject', '--reason', 'fixed-later']);
+    const d = store.query({ type: 'HumanDecision' });
+    expect(d[0].run_id).toBe('r9');
+    expect(d[0].task_id).toBe('t1');
+  });
+  it('decide: eşleşen TaskPicked yok + --run yok → fail-closed hata', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r25f-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl')); // boş store
+    await expect(buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']))
+      .rejects.toThrow('koşum bulunamadı');
+    // fail-closed: sessiz 'manual' yazımı YOK — store'a HumanDecision YAZILMAZ
+    expect(store.query({ type: 'HumanDecision' })).toHaveLength(0);
+  });
+  it('decide: --run manual → run_id manual (explicit)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r25m-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--run', 'manual', '--reject', '--reason', 'stale-lesson']);
+    const d = store.query({ type: 'HumanDecision' });
+    expect(d[0].run_id).toBe('manual');
+    expect(d[0].payload).toMatchObject({ decision: 'reject', reason: 'stale-lesson' });
   });
   it('status: validateChain sonucunu içerir', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli2-'));
@@ -27,6 +88,65 @@ describe('CLI', () => {
     await buildCli(dir).parseAsync(['node', 'devloop', 'status']); // from:'user' yerine varsayılan node kuralı (bkz. yukarıdaki not)
     console.log = origLog;
     expect(out.join('\n')).toContain('chain=ok');
+  });
+
+  // R27 (faz 5 T7): status aktivasyon alanları — goldenCount (golden/ kabul edilmiş görev sayısı,
+  // loadGoldenTasks ile aynı kaynak), goldenDrafts (golden-drafts/ staging taslak sayısı),
+  // l3Active (goldenCount >= l3MinGoldenTasks — evalRunner summary + evolve kapısıyla AYNI tanım),
+  // lastEvalScore (son PRODUCTION EvalRun score — shadow eval sayılmaz). Konsol kuralı: alanlar
+  // DAİMA yazılır; eval koşumu hiç yoksa lastEvalScore literal 'null' ile görünür (alan yok-bırakma
+  // yok — tüketiciler tek biçim okur). Mevcut alanlar (runs/prs/blocked/decisions/lessons/chain)
+  // aynen korunur — additive only.
+  it('status: goldenCount/goldenDrafts/l3Active/lastEvalScore alanları (gerçekçi store)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r27-'));
+    // gerçekçi fixture: golden/ içinde 1 kabul edilmiş görev, golden-drafts/ içinde 2 bekleyen taslak
+    const GOLDEN = {
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [{ category: 'lint' }], forbiddenCategories: ['secret'] },
+    };
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify(GOLDEN));
+    mkdirSync(join(dir, '.devloop', 'golden-drafts'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden-drafts', 'd1.task.json'), JSON.stringify({ ...GOLDEN, goldenId: 'd1' }));
+    writeFileSync(join(dir, '.devloop', 'golden-drafts', 'd2.task.json'), JSON.stringify({ ...GOLDEN, goldenId: 'd2' }));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    // son production eval score=100; arkasından shadow eval score=50 — lastEvalScore shadow'u SAYMAZ
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 1, passed: 1, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    await store.append('EvalRun', 'eval-s', '-', 'eval', { evalId: 's1', goldenCount: 1, passed: 0, failed: 1, score: 50, invalid: [], perTask: [], configSnapshot: { candidate: 'evolve-shadow' } });
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    await buildCli(dir).parseAsync(['node', 'devloop', 'status']);
+    console.log = origLog;
+    const line = out.join('\n');
+    expect(line).toContain('goldenCount=1');
+    expect(line).toContain('goldenDrafts=2');
+    expect(line).toContain('l3Active=false'); // 1 < varsayılan l3MinGoldenTasks=50
+    expect(line).toContain('lastEvalScore=100'); // shadow (50) değil — son production run
+    expect(line).toContain('chain=ok'); // mevcut alanlar aynen (additive only)
+  });
+  it('status: 50 golden → l3Active=true, eval yokken lastEvalScore=null', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r27n-'));
+    const GOLDEN = {
+      goldenId: 'g',
+      taskSpec: { id: 'gt', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    };
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    for (let i = 0; i < 50; i++) { // gerçek eşik: varsayılan l3MinGoldenTasks=50 (policy.yaml yok)
+      writeFileSync(join(dir, '.devloop', 'golden', `g${i}.task.json`), JSON.stringify({ ...GOLDEN, goldenId: `g${i}` }));
+    }
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    await buildCli(dir).parseAsync(['node', 'devloop', 'status']);
+    console.log = origLog;
+    const line = out.join('\n');
+    expect(line).toContain('goldenCount=50');
+    expect(line).toContain('l3Active=true'); // 50 >= 50 → L3 aktivasyon görünür
+    expect(line).toContain('goldenDrafts=0');
+    expect(line).toContain('lastEvalScore=null'); // kural: eval koşumu yoksa literal 'null'
   });
 
   // R14 (faz 3 T8): L2 bildirimi — karar sayısı l2MinDecisions eşiğinin altındayken learn çıktısı
@@ -51,7 +171,8 @@ describe('CLI', () => {
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     for (const [i, run] of ['r1', 'r2', 'r3'].entries()) {
       const art = await store.append('ArtifactProduced', run, `t${i}`, 'b', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-      const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-ensemble', { finding: { id: `f${i}`, stage: 'llm-ensemble', category: 'off-by-one', severity: 'required', confidence: 0.9, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-ensemble', { finding: { id: `f${i}`, stage: 'llm-ensemble', category: 'off-by-one', severity: 'required', confidence: 0.9, corroborated: false, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
       await store.append('HumanDecision', run, `t${i}`, 'h', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [f.event_id] });
     }
     for (let i = 3; i < 100; i++) { // global eşik: policy.yaml yok → l2MinDecisions=100
@@ -66,7 +187,8 @@ describe('CLI', () => {
     expect(out.join('\n')).toContain(p!.proposalId);
     expect(out.join('\n')).toContain('off-by-one');
     await buildCli(dir).parseAsync(['node', 'devloop', 'learn', 'apply', p!.proposalId]);
-    const created = store.query({ type: 'ProposalCreated' });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const created = queryTyped(store, { type: 'ProposalCreated' });
     expect(created).toHaveLength(1);
     expect(created[0].payload.proposalId).toBe(p!.proposalId);
     expect(existsSync(join(dir, '.devloop', 'proposals', p!.proposalId, 'PROPOSAL.md'))).toBe(true);
@@ -90,7 +212,8 @@ describe('CLI', () => {
     }));
     await buildCli(dir).parseAsync(['node', 'devloop', 'eval']);
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
-    const ev = store.query({ type: 'EvalRun' })[0];
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const ev = queryTyped(store, { type: 'EvalRun' })[0];
     expect(ev.payload.configSnapshot).toMatchObject({ mode: 'production' });
   });
 
@@ -153,19 +276,28 @@ describe('CLI', () => {
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     for (const [i, run] of ['r1', 'r2', 'r3'].entries()) {
       const art = await store.append('ArtifactProduced', run, `t${i}`, 'b', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-      const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category: 'off-by-one', severity: 'required', confidence: 0.9, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category: 'off-by-one', severity: 'required', confidence: 0.9, corroborated: false, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
       await store.append('HumanDecision', run, `t${i}`, 'h', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [f.event_id] });
     }
-    // Shadow pipeline ensemble içerir (run komutu assembly'si) — API anahtarı yokken reviewer
-    // stage'leri fail-fast GatewayError verir (ağ yok); advisory olduğundan eval yine pass olur.
+    // Shadow pipeline ensemble içerir (run komutu assembly'si) — reviewer stage'leri fail-fast
+    // GatewayError verir; advisory olduğundan eval yine pass olur.
+    // R26b hüküm: createGatewayOrChain 0-ayakta KURULUM anında GatewayError fırlatır (fail-closed)
+    // — eski 'anahtar sil → boş zincir complete'te düşer' donanımı artık shadow kurulumunu
+    // başlatamazdı. Senaryo KORUNUR: sahte anahtar → 1 ayak kurulur; fetch stub HTTP 401 →
+    // reviewer yine fail-fast GatewayError (gerçek ağ/backoff YOK — HTTP hatası retry'sız
+    // bir sonraki modele geçer ve bekleme yapmaz). Assertion hedefleri AYNEN.
     const prevKey = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'k-dummy';
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('unauthorized', { status: 401 });
     const out: string[] = [];
     const origLog = console.log; console.log = (m: string) => out.push(m);
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'evolve', '--shadow']);
     } finally {
       console.log = origLog;
+      globalThis.fetch = prevFetch;
       if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
     }
     const parsed = JSON.parse(out.join('\n'));

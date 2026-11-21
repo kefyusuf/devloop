@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { LlmEnsembleStage } from '../../src/pipeline/stages/llmEnsemble.js';
 import { loadConfig } from '../../src/config/config.js';
-import type { ReviewStage, ReviewContext } from '../../src/contracts/review.js';
 import type { Finding } from '../../src/contracts/schemas.js';
+// hüküm: tsconfig.test kapsamı (R26h) — StageResult anotasyonu (vi.fn genişlemesini keser)
+import type { ReviewStage, ReviewContext, StageResult } from '../../src/contracts/review.js';
 
 const policy = loadConfig(process.cwd()).policy;
 const ctx = (risk: number): ReviewContext => ({
@@ -10,8 +11,9 @@ const ctx = (risk: number): ReviewContext => ({
   artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] },
   repoPath: '.', riskScore: risk,
 });
+// hüküm: tsconfig.test kapsamı — vi.fn'in çıkarımı status'u string'e genişletir; StageResult anotasyonu
 const mkStage = (name: string, findings: Finding[], calls: string[] = []): ReviewStage =>
-  ({ name, kind: 'advisory' as const, evaluate: vi.fn(async () => { calls.push(name); return { status: 'pass', findings, durationMs: 1 }; }) });
+  ({ name, kind: 'advisory' as const, evaluate: vi.fn(async (): Promise<StageResult> => { calls.push(name); return { status: 'pass', findings, durationMs: 1 }; }) });
 const F = (id: string, stage: string, severity: Finding['severity'], corroborated = false): Finding =>
   ({ id, stage, category: 'security', severity, confidence: 0.9, evidence: { file: 'a.ts', line: 1 }, corroborated });
 

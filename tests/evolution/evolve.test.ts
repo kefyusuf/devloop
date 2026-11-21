@@ -29,12 +29,14 @@ const { gatewayCompleteSpy } = vi.hoisted(() => ({
 }));
 vi.mock('../../src/gateway/factory.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/gateway/factory.js')>();
-  // R21 (faz 4 T6): CLI createGateways + ChainedGateway kullanır — mock createGateways'i de
-  // override eder (tek ayak = spy gateway; CLI length===1 düz gateway seçer → davranış aynen).
+  // R21 (faz 4 T6) + R26b (faz 5 T3): CLI gateway kurulumunu createGatewayOrChain üzerinden
+  // yapar (helper createGateways çağırır; vi.mock modül-içi çağrıyı yakalayamadığından helper
+  // AYRICA override edilir) — tek ayak = spy gateway döner, CLI seçim davranışı aynen kanılanır.
   return {
     ...actual,
     createGateway: () => ({ complete: gatewayCompleteSpy }),
     createGateways: () => [{ complete: gatewayCompleteSpy }],
+    createGatewayOrChain: () => ({ complete: gatewayCompleteSpy }),
   };
 });
 
@@ -45,10 +47,12 @@ vi.mock('../../src/evolution/evolve.js', async (importOriginal) => {
   return { ...actual, generateLlmMutations: vi.fn(actual.generateLlmMutations) };
 });
 
-const baseSummary = (over: Partial<EvalSummary> = {}): EvalSummary => ({
-  evalId: 'base-eval', goldenCount: 60, passed: 60, failed: 0, score: 100,
-  perTask: [], configSnapshot: { mode: 'production' }, l3Active: true, ...over,
-});
+// hüküm: tsconfig.test kapsamı — Partial spread'i `invalid?: string[]` union'ı üretir ve
+// EvalSummary'ye atanmaz; Object.assign ile kesişim tipi korunur (atama geçerli)
+const baseSummary = (over: Partial<EvalSummary> = {}): EvalSummary => Object.assign({
+  evalId: 'base-eval', goldenCount: 60, passed: 60, failed: 0, score: 100, invalid: [],
+  perTask: [], configSnapshot: { mode: 'production' }, l3Active: true,
+}, over);
 
 const makeCtx = (dir: string, over: Partial<EvolveContext> = {}): EvolveContext => ({
   store: new VerdictStore(join(dir, 'events.jsonl')),
@@ -63,7 +67,8 @@ const makeCtx = (dir: string, over: Partial<EvolveContext> = {}): EvolveContext 
 async function seedRejects(store: VerdictStore, category: string, runs: string[]) {
   for (const [i, run] of runs.entries()) {
     const art = await store.append('ArtifactProduced', run, `t${i}`, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-    const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category, severity: 'required', confidence: 0.9, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
+    // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+    const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category, severity: 'required', confidence: 0.9, corroborated: false, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
     await store.append('HumanDecision', run, `t${i}`, 'human', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [f.event_id] });
   }
 }
@@ -97,7 +102,8 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     const ctx = makeCtx(dir);
     for (const [i, run] of ['r1', 'r2'].entries()) {
       const art = await ctx.store.append('ArtifactProduced', run, `td${i}`, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-      await ctx.store.append('FindingEmitted', run, `td${i}`, 'test-gate', { finding: { id: `tf${i}`, stage: 'test-gate', category: 'test-diff', severity: 'required', confidence: 1, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      await ctx.store.append('FindingEmitted', run, `td${i}`, 'test-gate', { finding: { id: `tf${i}`, stage: 'test-gate', category: 'test-diff', severity: 'required', confidence: 1, corroborated: false, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
     }
     const out = generateEvolutionCandidates(ctx, baseSummary());
     expect(out).toHaveLength(1);
@@ -112,7 +118,8 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     const ctx = makeCtx(dir);
     const emitTestDiff = async (run: string, taskId: string) => {
       const art = await ctx.store.append('ArtifactProduced', run, taskId, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-      await ctx.store.append('FindingEmitted', run, taskId, 'risk-triage', { finding: { id: `f-${taskId}`, stage: 'risk-triage', category: 'test-diff', severity: 'optional', confidence: 1, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      await ctx.store.append('FindingEmitted', run, taskId, 'risk-triage', { finding: { id: `f-${taskId}`, stage: 'risk-triage', category: 'test-diff', severity: 'optional', confidence: 1, corroborated: false, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
     };
     // 1 üretim koşumu + 1 shadow koşumu (EvalRun configSnapshot'ta 'candidate') — her biri 1 test-diff
     await emitTestDiff('r-prod-1', 't1');
@@ -129,6 +136,30 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     await ctx.store.append('EvalRun', 'eval-shadow-2', '-', 'eval', { evalId: 's2', goldenCount: 1, passed: 0, failed: 1, score: 0, invalid: [], perTask: [], configSnapshot: { candidate: { label: 'x' } } });
     await emitTestDiff('eval-shadow-2', 'ts2');
     expect(generateEvolutionCandidates(ctx, baseSummary())[0].evoId).toBe(out[0].evoId);
+  });
+
+  // R26g (faz 5 T6): eval- prefix'li koşumlar (production eval dâhil — configSnapshot'ta 'candidate'
+  // YOK) sinyale girmez — shadow kuralının genişletmesi; production eval koşumları sinyali kirletmez.
+  // evalRunner runId sözleşmesi `eval-<evalId>` olduğundan run_id prefix'i production/shadow ayrımı
+  // yapmaksızın TÜM eval koşumlarını kapsar; sayım değişmezse evoId seed'i de değişmez.
+  it("eval- prefix'li production eval koşumu test-diff bulgusu aday sayımına girmez", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo3c-'));
+    const ctx = makeCtx(dir);
+    const emitTestDiff = async (run: string, taskId: string) => {
+      const art = await ctx.store.append('ArtifactProduced', run, taskId, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      await ctx.store.append('FindingEmitted', run, taskId, 'risk-triage', { finding: { id: `f-${taskId}`, stage: 'risk-triage', category: 'test-diff', severity: 'optional', confidence: 1, corroborated: false, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+    };
+    await emitTestDiff('r-prod-1', 't1');
+    await emitTestDiff('r-prod-2', 't2');
+    const out = generateEvolutionCandidates(ctx, baseSummary());
+    expect(out).toHaveLength(1);
+    // production eval koşumu (eval- run_id, configSnapshot'ta 'candidate' yok) + bulgusu → sayım DEĞİŞMEZ
+    await ctx.store.append('EvalRun', 'eval-prod-1', '-', 'eval', { evalId: 'pe1', goldenCount: 1, passed: 0, failed: 1, score: 0, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    await emitTestDiff('eval-prod-1', 'te1');
+    const after = generateEvolutionCandidates(ctx, baseSummary());
+    expect(after).toHaveLength(1);
+    expect(after[0].evoId).toBe(out[0].evoId); // eval- koşumu sayıma girseydi seed `test-diff:3` → evoId değişirdi
   });
 });
 
@@ -252,7 +283,8 @@ describe('loadAppliedPlaybooks (applied playbook → reviewer prompt, I2)', () =
     let capturedSystem = '';
     let capturedUser = '';
     const gateway: LlmGateway = {
-      complete: vi.fn(async (req: { system: string; user: string; schema: z.Zod<unknown> }) => {
+      // hüküm: tsconfig.test kapsamı — zod v3 dışa aktarımı ZodType (z.Zod genel ad alan üyesi değil)
+      complete: vi.fn(async (req: { system: string; user: string; schema: z.ZodType<unknown> }) => {
         capturedSystem = req.system; capturedUser = req.user;
         return { data: { findings: [] }, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 } };
       }),
@@ -478,5 +510,26 @@ describe('generateLlmMutations (R19)', () => {
     const parsed = JSON.parse(out.join('\n')) as Record<string, unknown>; // stdout JSON parse edilebilir kalır
     expect(parsed.llmMutations).toBeUndefined();
     expect(Array.isArray(parsed.candidates)).toBe(true);
+  });
+
+  // R26d (faz 5 T5): evoId seed'i canonicalJson üzerinden — AYNI içerik farklı key-sırasıyla
+  // geliyorsa AYNI evoId (key-order duyarlılığı kapanır). Mock gateway zod parse yapmaz → mock'un
+  // content key sırası seed'e AYNEN ulaşır; JSON.stringify seed'inde iki çağrı farklı evoId üretirdi.
+  it('R26d: aynı içerik farklı key-sıralı LLM mutasyon content\'i → aynı evoId', async () => {
+    const mkGw = (content: Record<string, unknown>): LlmGateway => ({
+      complete: vi.fn(async () => ({
+        data: { mutations: [{ kind: 'playbook-reviewer', title: 'kanıt eşiği yükselt', content, rationale: 'tekrarlayan fp' }] },
+        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 },
+      })),
+    } as unknown as LlmGateway);
+    const dir = mkdtempSync(join(tmpdir(), 'evo-llm7-'));
+    const ctx = makeCtx(dir);
+    const baseline = baseSummary({ evalId: 'b-key' });
+    const shadowEval = baseSummary({ evalId: 's-key' });
+    const a = await generateLlmMutations({ ctx, gateway: mkGw({ note: 'eşik yükselt', category: 'perf' }), baseline, shadowEval });
+    const b = await generateLlmMutations({ ctx, gateway: mkGw({ category: 'perf', note: 'eşik yükselt' }), baseline, shadowEval });
+    expect(a).toHaveLength(1);
+    expect(b).toHaveLength(1);
+    expect(a[0].evoId).toBe(b[0].evoId);
   });
 });

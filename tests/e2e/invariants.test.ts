@@ -9,8 +9,8 @@ import { LlmEnsembleStage } from '../../src/pipeline/stages/llmEnsemble.js';
 import { SecretScanStage } from '../../src/pipeline/stages/secretScan.js';
 import { MutationStage } from '../../src/pipeline/stages/mutationStage.js';
 import { parseDiff, runReviewDiff } from '../../src/shell/reviewDiff.js';
-import { runEval } from '../../src/eval/evalRunner.js';
-import { generateEvolutionCandidates, applyEvolution, type EvolveContext } from '../../src/evolution/evolve.js';
+import { runEval, type EvalSummary } from '../../src/eval/evalRunner.js';
+import { generateEvolutionCandidates, applyEvolution, generateLlmMutations, type EvolveContext } from '../../src/evolution/evolve.js';
 import { loadConfig, type Policy } from '../../src/config/config.js';
 import { createGateways, ChainedGateway } from '../../src/gateway/factory.js';
 import { AnthropicGateway, GatewayError } from '../../src/gateway/gateway.js';
@@ -18,6 +18,8 @@ import { OpenAIGateway } from '../../src/gateway/openai.js';
 import { dockerizeSpawn } from '../../src/shell/sandbox.js';
 import { composeReviewerLessons } from '../../src/shell/composeLessons.js';
 import { DevloopEventSchema, makeEnvelope } from '../../src/contracts/events.js';
+// hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcısı
+import { queryTyped } from '../helpers/events.js';
 import { z } from 'zod';
 import { mkdtempSync, readFileSync, mkdirSync, readdirSync, cpSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,7 +47,8 @@ vi.mock('../../src/adapters/typescript/index.js', async (importOriginal) => {
 // Düzeltme 5: "type":"module" altında require geçersiz — statik ESM import.
 const base = loadConfig(process.cwd()).policy;
 const ctx = (): ReviewContext => ({ taskSpec: { id: 't', description: 'd', acceptanceCriteria: ['a'], filesScope: [] }, artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, repoPath: '.', riskScore: 0 });
-const F = (id: string, category: string, severity: Finding['severity']): Finding => ({ id, stage: 's', category, severity, confidence: 1, evidence: { file: 'a.ts', line: 1 } });
+// hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+const F = (id: string, category: string, severity: Finding['severity']): Finding => ({ id, stage: 's', category, severity, confidence: 1, corroborated: false, evidence: { file: 'a.ts', line: 1 } });
 const mkStage = (name: string, status: 'pass' | 'fail' | 'error' | 'skipped') => ({ name, kind: 'gate' as const, evaluate: vi.fn(async () => ({ status, findings: [], durationMs: 1 })) });
 
 describe('A6 değişmez kural paketi', () => {
@@ -61,11 +64,13 @@ describe('A6 değişmez kural paketi', () => {
 
   it('bütçe: çok çağrılı gerçek usage toplamı ile durur', async () => {
     let n = 0;
-    const inner: LlmGateway = { complete: vi.fn(async () => { n++; return { data: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.5 } }; }) };
+    // hüküm: tsconfig.test kapsamı — vi.fn anonim mock'u genel complete imzasına atanamaz; cast gerekli
+    const inner: LlmGateway = { complete: vi.fn(async () => { n++; return { data: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.5 } }; }) as unknown as LlmGateway['complete'] };
     const bg = new BudgetedGateway(inner, 1.0, () => {});
-    await bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' });
-    await bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' }); // toplam 1.0
-    await expect(bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' })).rejects.toThrow('Bütçe');
+    // hüküm: tsconfig.test kapsamı — parse parametresi implicit any idi; unknown anotasyonu
+    await bg.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' });
+    await bg.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' }); // toplam 1.0
+    await expect(bg.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' })).rejects.toThrow('Bütçe');
     expect(n).toBe(2);
   });
 
@@ -107,7 +112,8 @@ describe('Faz 2 değişmezleri (R7)', () => {
     // Hüküm: BudgetedGateway post-call eşiği `>` olduğundan 0.6+0.6 aşımı İKİNCİ çağrıda (toplam bütçeyi
     // o an geçtiği için) post-call BudgetExceededError verir; üçüncü çağrı ise ön-kontrolle kapalıdır.
     let n = 0;
-    const inner: LlmGateway = { complete: vi.fn(async () => { n++; return { data: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.6 } }; }) };
+    // hüküm: tsconfig.test kapsamı — vi.fn anonim mock'u genel complete imzasına atanamaz; cast gerekli
+    const inner: LlmGateway = { complete: vi.fn(async () => { n++; return { data: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.6 } }; }) as unknown as LlmGateway['complete'] };
     const bg = new BudgetedGateway(inner, 1.0, () => {});
     await bg.complete(req); // generator kaynağı: 0.6 — tek başına serbest
     await expect(bg.complete(req)).rejects.toThrow('Bütçe'); // reviewer kaynağı: kümülatif 1.2 > 1.0 → post-call reddi
@@ -190,7 +196,8 @@ describe('Faz 2 değişmezleri (R7)', () => {
       const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
       const summary = await new Orchestrator(orchDeps(repo, store)).run(join(repo, 'tasks.json'));
       expect(summary.prs).toHaveLength(1); // koşum gerçekten tamlandı (erken abort boş kanıt bırakmaz)
-      const snap = store.query({ type: 'RunStarted' })[0].payload.configSnapshot;
+      // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+      const snap = queryTyped(store, { type: 'RunStarted' })[0].payload.configSnapshot;
       return String(snap.gateConfigHash);
     };
     const h1 = await runRepo('{"compilerOptions":{"strict":true}}');
@@ -246,13 +253,18 @@ describe('Faz 3 değişmezleri (R15)', () => {
     // 2. üretim sinyal koşumu: gerçek CI yolu (runReviewDiff) — test dosyası diff'i test-diff bulgusu
     // ayrı run_id'de (ci-*) düşürür → iki farklı koşumda test-diff → playbook-generator adayı.
     // (İki runEval art arda Date.now() çakışması riskine karşı deterministik yol budur.)
+    // R26g hüküm güncellemesi (faz 5 T6): eval- prefix'li koşumlar (baseline runEval dâhil) artık
+    // sinyal SAYILMAZ — eski davranışta baseline eval koşumunun test-diff bulgusu + 1 ci koşumu
+    // eşiği dolduruyordu; şimdi İKİ ci-* sinyal koşumu gerekir.
     const ciStages = GATES5.map((n) => fakeGate(n));
-    await runReviewDiff({
-      diffText: TESTFILE_DIFF, taskSpecId: 'td-signal',
+    const ciSignalRun = (taskSpecId: string) => runReviewDiff({
+      diffText: TESTFILE_DIFF, taskSpecId,
       gatePipeline: new ReviewPipeline(ciStages, { ...base, gates: GATES5, advisory: [] }),
       fullPipeline: new ReviewPipeline([...ciStages, { name: 'llm-ensemble', kind: 'advisory', evaluate: async () => ({ status: 'pass', findings: [], durationMs: 1 }) }], { ...base, gates: GATES5, advisory: ['llm-ensemble'] }),
       store, policy: base, repoPath: repo,
     });
+    await ciSignalRun('td-signal');
+    await ciSignalRun('td-signal-2');
 
     const ctx: EvolveContext = {
       store,
@@ -409,7 +421,8 @@ describe('Faz 4 değişmezleri (R23)', () => {
     const legsOff = createGateways({ ...base, llm: { ...base.llm, crossProviderFallback: false } });
     expect(legsOff).toHaveLength(1);
     expect(legsOff[0]).toBeInstanceOf(AnthropicGateway);
-    const fetchMockOff = vi.fn(async () => anthropicResponse(500));
+    // hüküm: tsconfig.test kapsamı — sıfır-parametre mock'un calls tuple'ı boş; rest parametresi gerekli
+    const fetchMockOff = vi.fn(async (..._args: unknown[]) => anthropicResponse(500));
     vi.stubGlobal('fetch', fetchMockOff);
     await expect(legsOff[0].complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
     expect(fetchMockOff.mock.calls.every((c) => String(c[0]).includes('api.anthropic.com'))).toBe(true);
@@ -506,6 +519,42 @@ llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costP
   });
 });
 
+// Faz 5 değişmezleri (R28): her faz-5 kabul kriteri değişmez olarak burada pinlenir. Referanslar:
+// decide fail-closed → tests/cli/cli.test.ts ('decide: eşleşen TaskPicked yok + --run yok →
+// fail-closed hata'); E2E zinciri → tests/e2e/decisionPath.test.ts (decide auto-resolve → golden
+// draft → accept → eval score 100). Aşağıdaki değişmez yalnız invariants düzeyinde eksik kalandır.
+describe('Faz 5 değişmezleri (R28)', () => {
+  // (c) R26d değişmezi — evoId key-order duyarlılığı: LLM mutasyon taslak seed'i canonicalJson
+  // üzerinden hesaplanır (evolve.ts). T5 birimleri canonicalJson string'i (tests/util/
+  // canonicalJson.test.ts) ve goldenId key-order'ını (tests/golden/draft.test.ts R26d) kanıladı;
+  // bu değişmez zincirin son halkasını (evoId) pinler: aynı mutasyon içeriği farklı key-sırasıyla
+  // gelirse taslak AYNI evoId'yi alır — JSON.stringify'a dönen regresyon staging dosya adını
+  // değiştirir ve burada yakalanır.
+  it('canonical JSON değişmezi: aynı LLM mutasyon içeriği farklı key-sırasıyla → aynı evoId', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'inv-f5evo-'));
+    const ctx: EvolveContext = {
+      store: new VerdictStore(join(dir, 'events.jsonl')),
+      playbookDir: join(dir, 'playbooks'),
+      candidateDir: join(dir, 'candidates'),
+      goldenCount: 60, // l3Active: eşik üstü — LLM kapısı (Kapı 1) geçilir
+      l3MinGoldenTasks: base.l3MinGoldenTasks,
+    };
+    // baseline/shadow ÖZET — gerileme kapısı geçilsin diye failed 0/0 (kapı kanıtı değil, evoId kanıtı)
+    const sum = (evalId: string): EvalSummary => ({ evalId, goldenCount: 60, passed: 60, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' }, l3Active: true });
+    const mkGateway = (content: Record<string, unknown>): LlmGateway => ({
+      complete: vi.fn(async () => ({
+        data: { mutations: [{ kind: 'playbook-reviewer', title: 'kanıt eşiği yükselt', content, rationale: 'tekrarlayan fp' }] },
+        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 },
+      })),
+    } as unknown as LlmGateway);
+    const a = await generateLlmMutations({ ctx, gateway: mkGateway({ note: 'n', category: 'perf' }), baseline: sum('base-eval'), shadowEval: sum('shadow-eval') });
+    const b = await generateLlmMutations({ ctx, gateway: mkGateway({ category: 'perf', note: 'n' }), baseline: sum('base-eval'), shadowEval: sum('shadow-eval') });
+    expect(a).toHaveLength(1);
+    expect(b[0].evoId).toBe(a[0].evoId); // key-sırası farkı taslak kimliğini değiştirmez (canonicalJson seed)
+    expect(a[0].evoId).toMatch(/^[0-9a-f]{16}$/); // non-vacuous: seed gerçekten akar, deterministik hex
+  });
+});
+
 // Düzeltme 9 (opsiyonel — dahil edildi): README/CLI fiil hizası koruması; ucuz, gürültü değil.
 describe('README hizası', () => {
   it('README, CLI fiilleriyle hizalı (run/decide/learn/status + faz 3: eval/evolve + faz 4: golden/evolve --llm)', () => {
@@ -521,5 +570,21 @@ describe('README hizası', () => {
     expect(readme).toContain('devloop golden');
     expect(readme).toContain('--llm');
     expect(readme).toContain('crossProviderFallback');
+  });
+
+  // R27 (faz 5 T7): L3 aktivasyon görünürlüğü README'de dokümante — 'faz 5 kapanışında güncellenir'
+  // hükmünün kanıtı; R28 kabul checklist'i de README'de pinli (bölüm silinirse test kırılır).
+  it('README faz 5: decide bağlantısı + status alanları + kabul checklist dokümante (R27/R28)', () => {
+    const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
+    expect(readme).toContain('## Faz 5');
+    expect(readme).toContain('auto-resolve'); // decide → run bağlantısı (R25)
+    expect(readme).toContain('goldenCount'); // R27 aktivasyon alanları
+    expect(readme).toContain('goldenDrafts');
+    expect(readme).toContain('l3Active');
+    expect(readme).toContain('lastEvalScore');
+    expect(readme).toContain('l3MinGoldenTasks'); // L3 aktivasyon yolu eşiği
+    expect(readme).toContain('canonical JSON'); // SHIP batch özeti (R26d)
+    expect(readme).toContain('typecheck:tests'); // tsconfig.test.json strict komutu (R26h/R28e)
+    expect(readme).toContain('Kabul checklist (R28)'); // kabul kanıt haritası
   });
 });

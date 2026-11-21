@@ -73,16 +73,31 @@ export async function runTool(repoPath: string, bin: string, args: string[], tim
  *   + runTool (process.execPath) — mevcut davranış.
  * A6 sınıflandırma (spawnTool) iki modda aynıdır; originalRepoPath verilmediyse docker modda
  * node_modules bind YOK (npx fail-closed error — dokümante davranış, sessiz host-fallback yok).
+ *
+ * R26c (faz 5 T4): TEK tool-run seam — mutationStage defaultRunner'ın her iki dalı (docker+host)
+ * bu fonksiyona delege; duplike host çözümleme burada toplandı. hostSeam: çağıran kendi
+ * resolveBin/runTool referanslarını verebilir (default modülün kendisi — davranış değişmez).
  */
 const PKG_SUBPATH: Record<string, string> = { stryker: '@stryker-mutator/core/bin/stryker.js' };
-export async function runToolDockerAware(repoPath: string, originalRepoPath: string | undefined, policy: Policy, pkg: string, args: string[], timeoutMs?: number): Promise<ToolOutput> {
+
+/**
+ * R26c (faz 5 T4): host dalının çözümleme/koşum yüzeyi. Default: modülün KENDİ resolveBin/runTool.
+ * Çağıran (ör. mutationStage defaultRunner) KENDİ import referanslarını geçebilir: tek kapı
+ * çağıranın yüzeyini onurlandırır — modül-seviyesi mock/izleme katmanları (test mock'ları bu
+ * modülün export yüzeyini süsler) çağrı zincirinde canlı kalır; adapter içi doğrudan çağrı bu
+ * süslemelere ulaşamaz (dinamik öz-import dahi mock kaydına düşmez — ampirik doğrulandı).
+ */
+export interface ToolRunHostSeam { resolveBin: typeof resolveBin; runTool: typeof runTool; }
+const DEFAULT_HOST_SEAM: ToolRunHostSeam = { resolveBin, runTool };
+
+export async function runToolDockerAware(repoPath: string, originalRepoPath: string | undefined, policy: Policy, pkg: string, args: string[], timeoutMs?: number, hostSeam: ToolRunHostSeam = DEFAULT_HOST_SEAM): Promise<ToolOutput> {
   if (policy.sandbox.mode === 'docker') {
     const sp = dockerizeSpawn({ repoPath, originalRepoPath, policy, bin: '', toolArgs: [pkg, ...args] });
     return spawnTool(sp.cmd, sp.args, repoPath, timeoutMs ?? SPAWN.timeout);
   }
-  const bin = resolveBin(repoPath, PKG_SUBPATH[pkg] ?? pkg);
+  const bin = hostSeam.resolveBin(repoPath, PKG_SUBPATH[pkg] ?? pkg);
   if (!bin) throw new Error(`${pkg} çözümlenemedi (fail-closed)`);
-  return runTool(repoPath, bin, args, timeoutMs ?? SPAWN.timeout);
+  return hostSeam.runTool(repoPath, bin, args, timeoutMs ?? SPAWN.timeout);
 }
 
 /**

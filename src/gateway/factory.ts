@@ -26,6 +26,22 @@ export function createGateways(policy: Policy): LlmGateway[] {
     .map((p) => (p === 'openai' ? new OpenAIGateway(policy) : new AnthropicGateway(policy)));
 }
 
+// R26b (faz 5 T3): CLI 5 gateway kurulum sitesinin duplike ternary'si
+// (gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways)) tek kapıya iner.
+// Sözleşme: 0 ayak → GatewayError (fail-closed KURULUM anında — eski davranışta boş
+// ChainedGateway kurulur, hata complete() anına ertelenirdi; hüküm: run/review-diff/eval
+// anahtarsız ortamda artık en başta anlamlı hata verir, LLM'siz koşum başlamaz);
+// 1 ayak → düz gateway (chain sarması YOK — usage/model sahipliği tek ayağa direkt);
+// çok ayak → ChainedGateway (R21 sıralı fallback). BudgetedGateway sarması çağıran
+// tarafta kalır — helper ham gateway/zincir döner.
+export function createGatewayOrChain(policy: Policy): LlmGateway {
+  const gateways = createGateways(policy);
+  if (gateways.length === 0) {
+    throw new GatewayError("Kullanılabilir gateway ayak yok (anahtarlar env'de eksik)");
+  }
+  return gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways);
+}
+
 // R21 (faz 4 T6): sıralı gateway zinciri — ayakları sırayla dener; ilk başarılı yanıt döner
 // (usage başarılı ayaktan gelir). GatewayError'lar toplanır; TÜM ayaklar başarısızsa tek
 // GatewayError fırlatır — son neden mesajı tüm ayakların hatalarını içerir (join). Boş zincir

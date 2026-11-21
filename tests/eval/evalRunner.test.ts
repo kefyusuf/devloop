@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import type { ReviewPipeline } from '../../src/pipeline/pipeline.js';
 import type { StageResult, ReviewStage } from '../../src/contracts/review.js';
 import type { LlmGateway } from '../../src/gateway/gateway.js';
+// hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcısı
+import { queryTyped } from '../helpers/events.js';
 
 const policy = loadConfig(process.cwd()).policy;
 const GOLDEN_DIFF = '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;';
@@ -26,13 +28,15 @@ function makeRepo(tasks: unknown[]): string {
   return dir;
 }
 const passPipeline = (): ReviewPipeline => {
-  const s = { name: 'static-gates', kind: 'gate' as const, evaluate: async (): Promise<StageResult> => ({ status: 'pass', findings: [], durationMs: 1 }) };
+  // hüküm: tsconfig.test kapsamı — evaluate sıfır-parametre ilan edilmişti; çağrı ctx geçirir
+  const s = { name: 'static-gates', kind: 'gate' as const, evaluate: async (_ctx: unknown): Promise<StageResult> => ({ status: 'pass', findings: [], durationMs: 1 }) };
   return { ordered: () => [s], run: vi.fn(async (ctx) => { await s.evaluate(ctx); return { verdicts: [{ stage: 'static-gates', status: 'pass', durationMs: 1 }], findings: [], gateFailed: null, passed: true }; }) } as unknown as ReviewPipeline;
 };
 
 describe('scoreEval', () => {
   it('gates pass + required yakalanmış + forbidden yok → pass', () => {
-    const r = scoreEval({ passed: true, findings: [{ id: 'f', stage: 's', category: 'lint', severity: 'required', confidence: 1, evidence: { file: 'a', corroborated: false } }] },
+    // hüküm: tsconfig.test kapsamı — corroborated Finding düzeyinde zorunlu (evidence içinde değil)
+    const r = scoreEval({ passed: true, findings: [{ id: 'f', stage: 's', category: 'lint', severity: 'required', confidence: 1, corroborated: false, evidence: { file: 'a' } }] },
       { gatesPass: true, requiredFindings: [{ category: 'lint' }], forbiddenCategories: [] });
     expect(r.pass).toBe(true);
   });
@@ -42,7 +46,8 @@ describe('scoreEval', () => {
     expect(r.reasons[0]).toContain('gate');
   });
   it('forbidden kategori ihlali → fail', () => {
-    const r = scoreEval({ passed: true, findings: [{ id: 'f', stage: 's', category: 'secret', severity: 'critical', confidence: 1, evidence: { file: 'a', corroborated: false } }] },
+    // hüküm: tsconfig.test kapsamı — corroborated Finding düzeyinde zorunlu (evidence içinde değil)
+    const r = scoreEval({ passed: true, findings: [{ id: 'f', stage: 's', category: 'secret', severity: 'critical', confidence: 1, corroborated: false, evidence: { file: 'a' } }] },
       { gatesPass: true, requiredFindings: [], forbiddenCategories: ['secret'] });
     expect(r.pass).toBe(false);
   });
@@ -57,7 +62,8 @@ describe('runEval', () => {
     expect(r.passed).toBe(1);
     expect(r.score).toBe(100);
     expect(r.l3Active).toBe(false); // 1 < 50
-    const ev = store.query({ type: 'EvalRun' })[0];
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const ev = queryTyped(store, { type: 'EvalRun' })[0];
     expect(ev.payload.score).toBe(100);
     expect(validateChain(store.readAll()).ok).toBe(true);
   });
@@ -66,7 +72,8 @@ describe('runEval', () => {
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     const spyGateway = { complete: vi.fn(async () => ({ data: { findings: [] }, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 } })) };
     const primary: ReviewStage = { name: 'llm-reviewer', kind: 'advisory', evaluate: async (ctx) => {
-      await (spyGateway as unknown as LlmGateway).complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: ctx.taskSpec.id });
+      // hüküm: tsconfig.test kapsamı — parse parametresi implicit any idi; unknown anotasyonu
+      await (spyGateway as unknown as LlmGateway).complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: ctx.taskSpec.id });
       return { status: 'pass', findings: [], durationMs: 1 };
     } };
     const gateStage: ReviewStage = { name: 'static-gates', kind: 'gate', evaluate: async () => ({ status: 'pass', findings: [], durationMs: 1 }) };
@@ -85,7 +92,8 @@ describe('runEval', () => {
     const r = await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
     expect(r.goldenCount).toBe(1); // yalnız GEÇERLİ görev koşar
     expect(r.invalid).toEqual(['bad.task.json']);
-    const ev = store.query({ type: 'EvalRun' })[0];
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const ev = queryTyped(store, { type: 'EvalRun' })[0];
     expect(ev.payload.invalid).toEqual(['bad.task.json']); // kanıt zincirinde de taşınır
     expect(validateChain(store.readAll()).ok).toBe(true);
   });
@@ -94,7 +102,8 @@ describe('runEval', () => {
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     const r = await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
     expect(r.invalid).toEqual([]);
-    expect(store.query({ type: 'EvalRun' })[0].payload.invalid).toEqual([]);
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    expect(queryTyped(store, { type: 'EvalRun' })[0].payload.invalid).toEqual([]);
   });
 
   // R22 (faz 4 T3): evalId çarpışma — seed yalnız repoPath+tasks.length+invalid iken aynı repo +
@@ -115,7 +124,8 @@ describe('runEval', () => {
       nowSpy.mockRestore();
     }
     expect(r1.evalId).not.toBe(r2.evalId);
-    const ids = store.query({ type: 'EvalRun' }).map((e) => e.payload.evalId);
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const ids = queryTyped(store, { type: 'EvalRun' }).map((e) => e.payload.evalId);
     expect(new Set(ids).size).toBe(2); // kanıtta da çarpışma yok
   });
 });

@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { loadConfig, type Policy } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
-import { createGateways, ChainedGateway, altModelFor } from '../gateway/factory.js';
+import { createGatewayOrChain, altModelFor } from '../gateway/factory.js';
 import { LlmGeneratorBackend } from '../generator/generator.js';
 import { LessonMemory } from '../memory/memory.js';
 import { generateCandidates, confirmCandidate, generateProposals, applyProposal } from '../learning/learn.js';
@@ -53,6 +53,20 @@ function lastEvalRun(s: VerdictStore, kind: 'production' | 'shadow'): EvalRunEve
   return filtered[filtered.length - 1];
 }
 
+// R25 (faz 5 T1): decide → GERÇEK run bağlantısı — L3 veri yolu (golden draft acceptedRuns:
+// accept ∩ PRCreated) gerçek decide kararlarıyla kapanır. taskId'ye göre store'daki SON eşleşen
+// TaskPicked'in run_id'si döner (dosya sırası kronolojiktir → pop() en yeni koşum); eşleşme yoksa
+// null (fail-closed çağrı noktasında). TaskPicked zarfı task_id, payload.taskSpec.id ORCHESTRATOR
+// GÖREV ID'sidir (multi-run store'da taskId tekil değil — taskSpec.id filtresi plan kontratıdır);
+// 'manual' sentinel'i BURAYA girmez: yalnız decide '--run manual' explicit yolu yazar.
+type TaskPickedEvent = Extract<DevloopEvent, { type: 'TaskPicked' }>;
+function resolveRunIdForTask(s: VerdictStore, taskId: string): string | null {
+  const picked = s.query({ type: 'TaskPicked' })
+    .filter((e): e is TaskPickedEvent => e.type === 'TaskPicked' && e.payload.taskSpec.id === taskId)
+    .pop();
+  return picked ? picked.run_id : null;
+}
+
 export function buildCli(workDir = process.cwd()): Command {
   const program = new Command();
   program.name('devloop').description('AI geliştirme + otomatik review döngüsü (trusted repos only)');
@@ -67,10 +81,10 @@ export function buildCli(workDir = process.cwd()): Command {
     // I1 (final review): bütçe TEK KAPI — BudgetedGateway CLI'da kurulur ve backend, reviewer
     // stage ve deps.gateway'a AYNI örnek geçilir. Böylece gerçek harcayan her çağrı bütçe sayacına
     // düşer; orchestrator içi ayrı sarmalama/canary çağrısı yoktur (kaldırıldı).
-    // R21 (faz 4 T6): cross-provider fallback — chain (tek ayakta düz gateway); BudgetedGateway
-    // sarması aynen ve TÜM chain'i kapsar (A6: her ayak harcaması budget'a işler).
-    const gateways = createGateways(policy);
-    const gateway = new BudgetedGateway(gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways), policy.budgetUsd, () => {});
+    // R21 (faz 4 T6): cross-provider fallback — R26b helper (tek ayakta düz gateway, çok ayakta
+    // chain, 0 ayakta fail-closed GatewayError); BudgetedGateway sarması aynen ve TÜM chain'i
+    // kapsar (A6: her ayak harcaması budget'a işler).
+    const gateway = new BudgetedGateway(createGatewayOrChain(policy), policy.budgetUsd, () => {});
     // R13: adapter policy alır — sandbox.mode docker ise lint/typecheck/tests koşumları konteynere
     // sarılır (dockerizeSpawn); host modda davranış değişmez. I2: originalRepoPath (deps.repoPath)
     // — docker modda orijinal repo node_modules'u /workspace/node_modules'a bind edilir.
@@ -130,7 +144,21 @@ export function buildCli(workDir = process.cwd()): Command {
   program.command('status').action(async () => {
     const s = store();
     const chain = validateChain(s.readAll());
-    console.log(`runs=${s.query({ type: 'RunStarted' }).length} prs=${s.query({ type: 'PRCreated' }).length} blocked=${s.query({ type: 'TaskBlocked' }).length} decisions=${s.query({ type: 'HumanDecision' }).length} lessons=${s.query({ type: 'LessonLearned' }).length} chain=${chain.ok ? 'ok' : 'BROKEN: ' + chain.errors.join('; ')}`);
+    // R27 (faz 5 T7): golden ≥50 aktivasyon görünürlüğü — mevcut alanların YANINA additive:
+    // goldenCount = loadGoldenTasks(repoDir()).tasks.length (evolve ctx.goldenCount ile AYNI kaynak:
+    // .devloop/golden/*.task.json, şema-geçerli + duplicate-temiz);
+    // goldenDrafts = golden-drafts/ staging .task.json sayımı (golden list ile aynı kural);
+    // l3Active = goldenCount >= policy.l3MinGoldenTasks (evalRunner l3Active + evolve Kapı 1 ile
+    // AYNI tanım — yeni tanım uydurulmadı);
+    // lastEvalScore = lastEvalRun(s,'production').payload.score (lastEvalRun helper — shadow eval
+    // hariç); konsol kuralı: alan daima yazılır, eval koşumu yoksa literal 'null'.
+    const { policy } = loadConfig(repoDir());
+    const goldenCount = loadGoldenTasks(repoDir()).tasks.length;
+    const draftsDir = join(repoDir(), '.devloop', 'golden-drafts');
+    const goldenDrafts = existsSync(draftsDir) ? readdirSync(draftsDir).filter((n) => n.endsWith('.task.json')).length : 0;
+    const lastEvalScore = lastEvalRun(s, 'production')?.payload.score ?? null;
+    const l3Active = goldenCount >= policy.l3MinGoldenTasks;
+    console.log(`runs=${s.query({ type: 'RunStarted' }).length} prs=${s.query({ type: 'PRCreated' }).length} blocked=${s.query({ type: 'TaskBlocked' }).length} decisions=${s.query({ type: 'HumanDecision' }).length} lessons=${s.query({ type: 'LessonLearned' }).length} chain=${chain.ok ? 'ok' : 'BROKEN: ' + chain.errors.join('; ')} goldenCount=${goldenCount} goldenDrafts=${goldenDrafts} l3Active=${l3Active} lastEvalScore=${lastEvalScore}`);
   });
 
   const learn = program.command('learn').description('aday dersleri listele/onayla');
@@ -194,12 +222,19 @@ export function buildCli(workDir = process.cwd()): Command {
     console.log('Öneri kaydedildi (ProposalCreated) + PROPOSAL.md yazıldı — insan onayı bekler.');
   });
 
+  // R25 (faz 5 T1): decide → gerçek run bağlantısı (fail-closed). '--run' verilirse AYNEN
+  // kullanılır (auto-resolve atlanır; '--run manual' tek explicit 'manual' yolu); verilmezse
+  // store'daki son eşleşen TaskPicked'in run_id'si auto-resolve edilir; çözülemezse fail-closed
+  // hata — sessiz 'manual' yazımı YOK (faz 4 final review keşfi bu kontratla kapanır).
   program.command('decide').requiredOption('--task <id>').option('--accept').option('--reject')
+    .option('--run <runId>', 'run_id (auto-resolve override; manuel karar için --run manual)')
     .requiredOption('--reason <reason>').option('--note <note>').option('--findings <ids>')
-    .action(async (opts: { task: string; accept?: boolean; reject?: boolean; reason: string; note?: string; findings?: string }) => {
+    .action(async (opts: { task: string; accept?: boolean; reject?: boolean; run?: string; reason: string; note?: string; findings?: string }) => {
       const decision = opts.accept ? 'accept' : opts.reject ? 'reject' : null;
       if (!decision) throw new Error('--accept veya --reject gerekli');
-      await store().append('HumanDecision', 'manual', opts.task, 'human', {
+      const runId = opts.run ?? resolveRunIdForTask(store(), opts.task);
+      if (!runId) throw new Error(`Görev için koşum bulunamadı: ${opts.task} — önce run, sonra decide veya --run ile belirtin`);
+      await store().append('HumanDecision', runId, opts.task, 'human', {
         decision, reason: opts.reason as never, note: opts.note,
         parentFindingEventIds: (opts.findings ?? '').split(',').filter(Boolean),
       });
@@ -219,9 +254,8 @@ export function buildCli(workDir = process.cwd()): Command {
       const { policy } = loadConfig(repoDir());
       const diffText = opts.diff === '-' ? readFileSync(0, 'utf8') : readFileSync(opts.diff, 'utf8');
       const mem = memory();
-      // R21 (faz 4 T6): cross-provider fallback chain — BudgetedGateway sarması aynen (tüm chain budget'a işler).
-      const gateways = createGateways(policy);
-      const gateway = new BudgetedGateway(gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways), policy.budgetUsd, () => {});
+      // R21 (faz 4 T6): cross-provider fallback chain (R26b helper) — BudgetedGateway sarması aynen (tüm chain budget'a işler).
+      const gateway = new BudgetedGateway(createGatewayOrChain(policy), policy.budgetUsd, () => {});
       const adapter = new TypeScriptAdapter(policy, repoDir()); // R13 + I2: docker modda wt mount + orijinal node_modules bind
       // R11 (faz 3 T5): risk-tiered çift pipeline — stage örnekleri paylaşımlı kurulur; runReviewDiff
       // triaj skoru < ciEnsembleRiskThreshold → gatePipeline, değilse fullPipeline seçer.
@@ -274,11 +308,10 @@ export function buildCli(workDir = process.cwd()): Command {
         new SecretScanStage(), new MutationStage(effPolicy, undefined, repoDir()),
       ];
       if (opts.full) {
-        // T6: gateway createGateways(effPolicy) ile kurulur (provider'a göre; R21 cross-fallback
-        // chain dahil). Eval yolu bütçe sayacı TUTMAZ: aday değerlendirme shadow,
+        // T6: gateway R26b helper ile kurulur (provider'a göre; R21 cross-fallback chain dahil).
+        // Eval yolu bütçe sayacı TUTMAZ: aday değerlendirme shadow,
         // production eval salt-okunur karşılaştırmadır; BudgetedGateway sarması bilinçli yapılmadı.
-        const gateways = createGateways(effPolicy);
-        const gateway = gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways);
+        const gateway = createGatewayOrChain(effPolicy);
         const mem = memory();
         // I2 (final fix wave): eval --full üretim pipeline'ının donmuş yargıcıdır — reviewerLessons
         // `run` assembly'siyle AYNI kompozisyon (mem + applied playbook'lar), aksi halde eval üretim
@@ -350,9 +383,8 @@ export function buildCli(workDir = process.cwd()): Command {
       // GERÇEKTEN girer. Policy = production policy (playbook-only shadow). Eval yolu bütçe sayacı
       // TUTMAZ (eval komutuyla aynı hüküm — shadow, harcayan üretim çağrısı değildir).
       const adapter = new TypeScriptAdapter(policy, repoDir()); // R13 + I2: shadow eval pipeline'ı da sandbox moduna uyar
-      // R21 (faz 4 T6): cross-provider fallback chain — eval yolu gibi budget sayacı tutmaz (aynen).
-      const gateways = createGateways(policy);
-      const gateway = gateways.length === 1 ? gateways[0] : new ChainedGateway(gateways);
+      // R21 (faz 4 T6): cross-provider fallback chain (R26b helper) — eval yolu gibi budget sayacı tutmaz (aynen).
+      const gateway = createGatewayOrChain(policy);
       const pipeline = new ReviewPipeline([
         new RiskTriageStage(policy), new StaticGatesStage(adapter), new TestGateStage(adapter),
         new SecretScanStage(), new MutationStage(policy, undefined, repoDir()),
@@ -379,9 +411,8 @@ export function buildCli(workDir = process.cwd()): Command {
       // JSON'u stdout'ta aynen yazılır (parse edilebilir kalır).
       if (opts.llm) {
         try {
-          // R21 (faz 4 T6): mutasyon gateway'i de chain — yalnız --llm'de kurulur.
-          const mutGateways = createGateways(policy);
-          const mutGateway = mutGateways.length === 1 ? mutGateways[0] : new ChainedGateway(mutGateways);
+          // R21 (faz 4 T6): mutasyon gateway'i de chain (R26b helper) — yalnız --llm'de kurulur.
+          const mutGateway = createGatewayOrChain(policy);
           out.llmMutations = await generateLlmMutations({ ctx, gateway: mutGateway, baseline, shadowEval });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);

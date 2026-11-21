@@ -7,6 +7,10 @@ import { loadConfig } from '../../src/config/config.js';
 import { computeRisk } from '../../src/pipeline/stages/riskTriage.js';
 import type { ReviewStage } from '../../src/contracts/review.js';
 import type { Finding } from '../../src/contracts/schemas.js';
+// hüküm: tsconfig.test kapsamı (R26h) — runWith policy parametresi açık Policy tipiyle (literal
+// `advisory: []` daraltması `never[]` üretirdi); payload union daraltma yardımcısı
+import type { Policy } from '../../src/config/config.js';
+import { queryTyped } from '../helpers/events.js';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -38,12 +42,13 @@ const GATES = ['risk-triage', 'static-gates', 'tests', 'secret-scan', 'mutation-
 function stage(name: string, kind: 'gate' | 'advisory', status: 'pass' | 'fail' | 'error' | 'skipped', findings: Finding[] = []): ReviewStage {
   return { name, kind, evaluate: async () => ({ status, findings, durationMs: 1 }) };
 }
+// hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
 const F = (id: string, severity: Finding['severity'], stageName = 'fake-advisory'): Finding =>
-  ({ id, stage: stageName, category: 'security', severity, confidence: 1, evidence: { file: 'src/a.ts', line: 1 } });
+  ({ id, stage: stageName, category: 'security', severity, confidence: 1, corroborated: false, evidence: { file: 'src/a.ts', line: 1 } });
 
 const DIFF = ['--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,2 +1,3 @@', ' const x=1;', '+const y=2;', '+const z=3;'].join('\n');
 
-async function runWith(stages: ReviewStage[], policy = ciPolicy) {
+async function runWith(stages: ReviewStage[], policy: Policy = ciPolicy) {
   const dir = mkdtempSync(join(tmpdir(), 'reviewdiff-'));
   const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
   const result = await runReviewDiff({
@@ -147,6 +152,19 @@ describe('parseDiff', () => {
     const d = ['--- a/y.ts\t', '+++ b/y.ts\t', '@@ -1 +1,2 @@', '+const z=3;'].join('\n');
     expect(parseDiff(d)).toEqual([{ path: 'y.ts', addedContent: 'const z=3;' }]);
   });
+
+  // R26e (faz 5 T6): reDevNull da trailing whitespace toleranslı — malformed diff'te `+++ /dev/null `
+  // (silinen dosya başlığı) eski davranışta başlık sayılmıyor, hunk içinde İÇERİK sanılıp `++ /dev/null`
+  // olarak önceki dosyaya akıyordu (bogus içerik); `[ \t]*$` toleransı /dev/null skip'ini ws'li satırda
+  // da korur (R22 header toleransıyla aynı aile; CRLF zaten satır bazında strip).
+  it('R26e: trailing-space `+++ /dev/null ` silinen-dosya başlığı — bogus içerik önceki dosyaya akmaz', () => {
+    const d = [
+      '--- a/keep.ts', '+++ b/keep.ts', '@@ -1 +1,2 @@', ' const a=1;', '+const b=2;',
+      'diff --git a/gone.ts b/gone.ts', 'deleted file mode 100644',
+      '--- a/gone.ts', '+++ /dev/null ', '@@ -1 +0,0 @@', '-gone();',
+    ].join('\n');
+    expect(parseDiff(d)).toEqual([{ path: 'keep.ts', addedContent: 'const b=2;' }]);
+  });
 });
 
 describe('review-diff exit kodları', () => {
@@ -156,7 +174,8 @@ describe('review-diff exit kodları', () => {
     expect(result.gateFailed).toBeNull();
     expect(result.findings).toEqual([]);
     // I3 (final fix wave): koşum RunStarted kanıtıyla açılır — policyHash + gateConfigHash (R4a)
-    const started = store.query({ runId: 'ci-t1', type: 'RunStarted' });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const started = queryTyped(store, { runId: 'ci-t1', type: 'RunStarted' });
     expect(started).toHaveLength(1);
     const snap = started[0].payload.configSnapshot as Record<string, unknown>;
     expect(typeof snap.policyHash).toBe('string');
@@ -172,9 +191,10 @@ describe('review-diff exit kodları', () => {
     expect(snap.gates).toEqual(ciPolicy.gates);
     // event zinciri: RunStarted → TaskPicked → ArtifactProduced → StageVerdict/RiskScored; runId ci-<task>
     expect(store.query({ runId: 'ci-t1', type: 'TaskPicked' }).length).toBe(1);
-    const art = store.query({ runId: 'ci-t1', type: 'ArtifactProduced' })[0];
-    const verdict = store.query({ runId: 'ci-t1', type: 'StageVerdict' })[0];
-    const risk = store.query({ runId: 'ci-t1', type: 'RiskScored' })[0];
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const art = queryTyped(store, { runId: 'ci-t1', type: 'ArtifactProduced' })[0];
+    const verdict = queryTyped(store, { runId: 'ci-t1', type: 'StageVerdict' })[0];
+    const risk = queryTyped(store, { runId: 'ci-t1', type: 'RiskScored' })[0];
     expect(art).toBeDefined();
     expect(verdict.payload.parentArtifactEventId).toBe(art.event_id); // T-final D3: parentArtifactEventId zorunlu
     expect(risk.payload.parentArtifactEventId).toBe(art.event_id);
@@ -256,7 +276,8 @@ describe('review-diff risk-tiered seçim (R11)', () => {
     expect(result.exitCode).toBe(0);
     expect(result.gateFailed).toBeNull();
     expect(result.findings).toEqual([]);
-    const verdictStages = store.query({ runId: 'ci-t1', type: 'StageVerdict' }).map((e) => e.payload.stage);
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const verdictStages = queryTyped(store, { runId: 'ci-t1', type: 'StageVerdict' }).map((e) => e.payload.stage);
     expect(verdictStages).toContain('static-gates'); // gatePipeline GERÇEKTEN koştu
     expect(verdictStages).not.toContain('llm-ensemble');
     // bağımsız triaj koşumu + seçilen pipeline'ın kendi risk-triage'i → iki risk-triage verdict'i
@@ -275,10 +296,11 @@ describe('review-diff risk-tiered seçim (R11)', () => {
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].category).toBe('test-diff');
     expect(result.findings[0].stage).toBe('risk-triage');
-    const emitted = store.query({ runId: 'ci-t1', type: 'FindingEmitted' });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const emitted = queryTyped(store, { runId: 'ci-t1', type: 'FindingEmitted' });
     expect(emitted).toHaveLength(1);
     expect(emitted[0].actor).toBe('risk-triage');
-    expect(emitted[0].payload.parentArtifactEventId).toBe(store.query({ runId: 'ci-t1', type: 'ArtifactProduced' })[0].event_id);
+    expect(emitted[0].payload.parentArtifactEventId).toBe(queryTyped(store, { runId: 'ci-t1', type: 'ArtifactProduced' })[0].event_id);
     expect(validateChain(store.readAll()).ok).toBe(true); // (c)
   });
 });
@@ -308,49 +330,77 @@ llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costP
   it('exit 0: gates pass + bulgu yok → process.exitCode "0"', async () => {
     // hüküm (R11): LOW-risk fixture (docs yolu — testDiff 0, scopePaths 0, 5 satır → risk 0 < eşik 20)
     // → gatePipeline koşar; fullPipeline/ensemble'a hiç girilmez (API anahtarı gerekmez).
+    // R26b hüküm: gateway kurulumu 0-ayakta fail-closed → sahte anahtar ile 1 ayak kurulur
+    // (fetch stub 401: ensemble girilse bile fail-fast GatewayError; gerçek ağ/backoff YOK).
     const dir = tmpRepo(['risk-triage'], ['--- a/docs/notes.md', '+++ b/docs/notes.md', '@@ -1 +1,2 @@', ' satır', '+yeni satır'].join('\n'));
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'k-dummy';
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('unauthorized', { status: 401 });
     const prev = process.exitCode;
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'review-diff', '--diff', join(dir, 'pr.diff'), '--task', 't1']);
       expect(Number(process.exitCode)).toBe(0); // vitest worker exitCode'u number'a çevirir — üretimde String('0') kalır
-    } finally { process.exitCode = prev; }
+    } finally {
+      process.exitCode = prev;
+      globalThis.fetch = prevFetch;
+      if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
+    }
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
-    expect(store.query({ runId: 'ci-t1', type: 'StageVerdict' })[0].payload.status).toBe('pass'); // bağımsız triaj verdict'i ilk sırada
-    const verdictStages = store.query({ runId: 'ci-t1', type: 'StageVerdict' }).map((e) => e.payload.stage);
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    expect(queryTyped(store, { runId: 'ci-t1', type: 'StageVerdict' })[0].payload.status).toBe('pass'); // bağımsız triaj verdict'i ilk sırada
+    const verdictStages = queryTyped(store, { runId: 'ci-t1', type: 'StageVerdict' }).map((e) => e.payload.stage);
     expect(verdictStages).toContain('static-gates'); // sabit beş gate koşar (policy gates override)
     expect(verdictStages).not.toContain('llm-ensemble'); // LOW risk → ensemble koşmaz
     expect(validateChain(store.readAll()).ok).toBe(true);
   });
 
   it('exit 1: sır içeren diff → secret-scan gate fail → process.exitCode "1"', async () => {
+    // R26b hüküm: gateway kurulumu 0-ayakta fail-closed → sahte anahtar ile 1 ayak kurulur
+    // (fetch stub 401: ensemble girilse bile fail-fast; secret-scan gate zaten exit 1 verir).
     const dir = tmpRepo(['risk-triage', 'secret-scan'], DIFF + "\n+const K = 'AKIAIOSFODNN7EXAMPLE';\n");
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'k-dummy';
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('unauthorized', { status: 401 });
     const prev = process.exitCode;
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'review-diff', '--diff', join(dir, 'pr.diff'), '--task', 't1']);
       expect(Number(process.exitCode)).toBe(1);
-    } finally { process.exitCode = prev; }
+    } finally {
+      process.exitCode = prev;
+      globalThis.fetch = prevFetch;
+      if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
+    }
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
-    const secretVerdict = store.query({ runId: 'ci-t1', type: 'StageVerdict' }).find((e) => e.payload.stage === 'secret-scan');
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const secretVerdict = queryTyped(store, { runId: 'ci-t1', type: 'StageVerdict' }).find((e) => e.payload.stage === 'secret-scan');
     expect(secretVerdict?.payload.status).toBe('fail');
   });
 
   // hüküm (R11): eski exit-2 testi artık FULL yolu koşturur (test dosyası → risk 50 ≥ eşik 20 →
   // fullPipeline + ensemble). Assertion'lar korunur; assembly adaptasyonu: ensemble fail-fast
-  // GatewayError verir (advisory — gate düşürmez) diye API anahtarı koşum süresince silinir.
+  // GatewayError verir (advisory — gate düşürmez) diye koşum süresince sahte anahtar + fetch stub
+  // kullanılır (R26b hüküm: 0-ayak kurulum fail-closed olduğundan anahtar SİLME artık kullanılamaz —
+  // sahte anahtar → 1 ayak; HTTP 401 → reviewer retry'sız ve bekleme yapmadan fail-fast).
   it('exit 2: test dosyası ekleyen diff → risk-triage required bulgu → process.exitCode "2"', async () => {
     const dir = tmpRepo(['risk-triage'], ['--- a/tests/x.test.ts', '+++ b/tests/x.test.ts', '@@ -1 +1,2 @@', ' const a=1;', '+const b=2;'].join('\n'));
     const prevKey = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'k-dummy';
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('unauthorized', { status: 401 });
     const prev = process.exitCode;
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'review-diff', '--diff', join(dir, 'pr.diff'), '--task', 't1']);
       expect(Number(process.exitCode)).toBe(2);
     } finally {
       process.exitCode = prev;
+      globalThis.fetch = prevFetch;
       if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
     }
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
-    const findings = store.query({ runId: 'ci-t1', type: 'FindingEmitted' });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const findings = queryTyped(store, { runId: 'ci-t1', type: 'FindingEmitted' });
     expect(findings.length).toBe(1); // bağımsız triaj + pipeline içi triaj aynı anahtar → tek bulgu (§5.2.4)
     expect(findings[0].payload.finding.category).toBe('test-diff');
   });

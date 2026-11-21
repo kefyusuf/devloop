@@ -5,6 +5,7 @@ import type { VerdictStore } from '../store/store.js';
 import type { GoldenTask } from '../eval/golden.js';
 import { GoldenTaskSchema } from '../eval/golden.js';
 import type { DevloopEvent } from '../contracts/events.js';
+import { canonicalJson } from '../util/canonicalJson.js'; // R26d: hash seed key-order duyarlılığı kapanır
 
 // store.query() dönüş tipi daraltılmaz (payload union kalır) — cli.ts'teki EvalRunEvent deseni
 // ile Extract + type-predicate filtresi kullanılır (bkz. src/shell/cli.ts evalRunToSummary).
@@ -56,7 +57,9 @@ export async function generateGoldenDrafts(args: {
       }
       const task = {
         // goldenId görev-bazlıdır: taskSpec + o görevin artifact diff'i — görev başına farklıdır.
-        goldenId: createHash('sha256').update(JSON.stringify(picked.payload.taskSpec) + art.payload.artifact.diff).digest('hex').slice(0, 16),
+        // R26d: taskSpec seed'i canonicalJson üzerinden — aynı içerik farklı key-sırasıyla gelse
+        // de aynı goldenId (staging dosya adı determinizmi korunur).
+        goldenId: createHash('sha256').update(canonicalJson(picked.payload.taskSpec) + art.payload.artifact.diff).digest('hex').slice(0, 16),
         taskSpec: picked.payload.taskSpec,
         fixtureDiff: art.payload.artifact.diff,
         expected: {

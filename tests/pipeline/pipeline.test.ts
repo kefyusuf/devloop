@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ReviewPipeline, PipelineConfigError } from '../../src/pipeline/pipeline.js';
 import { loadConfig } from '../../src/config/config.js';
-import type { ReviewStage, ReviewContext } from '../../src/contracts/review.js';
+// hüküm: tsconfig.test kapsamı (R26h) — StageResult anotasyonu (vi.fn genişlemesini keser)
+import type { ReviewStage, ReviewContext, StageResult } from '../../src/contracts/review.js';
 import type { Finding } from '../../src/contracts/schemas.js';
 
 const base = loadConfig(process.cwd()).policy;
@@ -15,8 +16,9 @@ const ctx: ReviewContext = {
 function stage(name: string, kind: 'gate' | 'advisory', status: 'pass' | 'fail' | 'error' | 'skipped', findings: Finding[] = [], calls: string[] = []): ReviewStage {
   return { name, kind, evaluate: vi.fn(async () => { calls.push(name); return { status, findings, durationMs: 1 }; }) };
 }
+// hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
 const F = (id: string, stageName: string, category: string, severity: Finding['severity'], file = 'a.ts'): Finding =>
-  ({ id, stage: stageName, category, severity, confidence: 1, evidence: { file, line: 1 } });
+  ({ id, stage: stageName, category, severity, confidence: 1, corroborated: false, evidence: { file, line: 1 } });
 
 describe('ReviewPipeline fail-closed', () => {
   it('gate fail → advisory koşmaz, gateFailed set, passed=false', async () => {
@@ -32,7 +34,8 @@ describe('ReviewPipeline fail-closed', () => {
     expect((await p.run(ctx)).gateFailed).toBe('static-gates');
   });
   it('stage hata mesajı verdict\'e taşınır (I5 — kanıt zinciri diagnoz edilebilir)', async () => {
-    const errStage: ReviewStage = { name: 'static-gates', kind: 'gate', evaluate: vi.fn(async () => ({ status: 'error', findings: [], durationMs: 2, errorMessage: 'eslint patladı' })) };
+    // hüküm: tsconfig.test kapsamı — vi.fn'in çıkarımı status'u string'e genişletir; StageResult anotasyonu
+    const errStage: ReviewStage = { name: 'static-gates', kind: 'gate', evaluate: vi.fn(async (): Promise<StageResult> => ({ status: 'error', findings: [], durationMs: 2, errorMessage: 'eslint patladı' })) };
     const r = await new ReviewPipeline([errStage], { ...policy, gates: ['static-gates'], advisory: [] }).run(ctx);
     expect(r.verdicts[0].errorMessage).toBe('eslint patladı');
     expect(r.verdicts[0].status).toBe('error');

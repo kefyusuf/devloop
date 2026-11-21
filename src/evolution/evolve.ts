@@ -10,6 +10,8 @@ import type { VerdictStore } from '../store/store.js';
 import type { EvalSummary } from '../eval/evalRunner.js';
 import type { DevloopEvent } from '../contracts/events.js';
 import type { LlmGateway } from '../gateway/gateway.js';
+import { GENERATOR_PLAYBOOK_YOK, REVIEWER_PLAYBOOK_YOK } from '../shell/sentinels.js'; // R26a: sentineller tek kaynakta
+import { canonicalJson } from '../util/canonicalJson.js'; // R26d: hash seed key-order duyarlılığı kapanır
 
 export interface EvolutionCandidate {
   evoId: string;
@@ -38,10 +40,14 @@ export function generateEvolutionCandidates(ctx: EvolveContext, baseline: EvalSu
   const shadowRunIds = new Set(ctx.store.query({ type: 'EvalRun' })
     .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun' && 'candidate' in e.payload.configSnapshot)
     .map((e) => e.run_id));
-  const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !shadowRunIds.has(e.run_id));
+  // R26g (faz 5 T6): eval- prefix'li run_id'ler (production eval dâhil) de sinyal DIŞI — shadow
+  // kuralının genişletmesi. evalRunner runId sözleşmesi `eval-<evalId>` olduğundan prefix, aday
+  // etiketli olmayan production eval koşumlarını da kapsar (test-diff sayımı + karar bucket'ları).
+  const signalExcluded = (runId: string): boolean => shadowRunIds.has(runId) || runId.startsWith('eval-');
+  const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !signalExcluded(e.run_id));
   const findings = ctx.store.query({ type: 'FindingEmitted' })
     .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted') // union daraltma (strict tsc — learn.ts ile aynı desen)
-    .filter((e) => !shadowRunIds.has(e.run_id));
+    .filter((e) => !signalExcluded(e.run_id));
   const byFinding = new Map<string, string>(findings.map((e): [string, string] => [e.event_id, e.payload.finding.category]));
   const buckets = new Map<string, { rejects: string[]; runs: Set<string>; decisionIds: string[] }>();
   for (const d of decisions) {
@@ -173,12 +179,13 @@ export async function generateLlmMutations(args: {
     'KURAL: Kanıt gerileme veya tekrarlayan sinyal göstermiyorsa mutasyon üretme; her mutasyonun rationale alanı kanıta dayansın.',
   ].join('\n\n');
   const { data } = await gateway.complete({ system, user, schema: LlmMutationsOutput, runId: shadowEval.evalId });
-  // evoId deterministik: sha256(kind:title:JSON(content)+sourceEvalId).slice(16) — sourceEvalId
-  // baseline evalId (koşumdan koşuma değişen shadowEval.evalId girdiye karışmaz, aksi halde aynı
-  // taslak her shadow koşumunda farklı dosya adı alırdı).
+  // evoId deterministik: sha256(kind:title:canonicalJson(content)+sourceEvalId).slice(16) —
+  // sourceEvalId baseline evalId (koşumdan koşuma değişen shadowEval.evalId girdiye karışmaz, aksi
+  // halde aynı taslak her shadow koşumunda farklı dosya adı alırdı). R26d: content seed'i
+  // canonicalJson üzerinden — aynı içerik farklı key-sırasıyla gelse de aynı evoId.
   const id = (seed: string) => createHash('sha256').update(seed).digest('hex').slice(0, 16);
   const drafts: LlmMutationDraft[] = data.mutations.map((m) => ({
-    evoId: id(`${m.kind}:${m.title}:${JSON.stringify(m.content)}+${baseline.evalId}`),
+    evoId: id(`${m.kind}:${m.title}:${canonicalJson(m.content)}+${baseline.evalId}`),
     kind: m.kind,
     title: m.title,
     content: m.content,
@@ -235,7 +242,7 @@ export function candidatePlaybookProvider(ctx: EvolveContext): PlaybookProvider 
       try { const c = JSON.parse(readFileSync(join(ctx.candidateDir, f), 'utf8')); if (c.kind === 'playbook-reviewer') notes.push(`- ${c.title}`); } catch { /* bozuk aday atılır */ }
     }
   }
-  return { reviewerContext: () => notes.length === 0 ? 'Reviewer playbook önerisi yok.' : notes.map((n) => `- ${n}`).join('\n') };
+  return { reviewerContext: () => notes.length === 0 ? REVIEWER_PLAYBOOK_YOK : notes.map((n) => `- ${n}`).join('\n') };
 }
 
 // I2 (final fix wave): APPLY edilmiş playbook'lar (applyEvolution'un yazdığı
@@ -267,7 +274,7 @@ export function loadAppliedPlaybooks(repoPath: string): {
     }
   }
   return {
-    reviewerContext: () => reviewerNotes.length === 0 ? 'Reviewer playbook önerisi yok.' : reviewerNotes.join('\n'),
-    generatorContext: () => generatorNotes.length === 0 ? 'Generator playbook önerisi yok.' : generatorNotes.join('\n'),
+    reviewerContext: () => reviewerNotes.length === 0 ? REVIEWER_PLAYBOOK_YOK : reviewerNotes.join('\n'),
+    generatorContext: () => generatorNotes.length === 0 ? GENERATOR_PLAYBOOK_YOK : generatorNotes.join('\n'),
   };
 }

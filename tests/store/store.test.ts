@@ -3,6 +3,8 @@ import { VerdictStore, validateChain } from '../../src/store/store.js';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+// hüküm: tsconfig.test kapsamı (R26h) — append DevloopEvent union döndürür; Envelope daraltması
+import { Envelope } from '../helpers/events.js';
 
 const taskSpec = { id: 't1', description: 'd', acceptanceCriteria: ['ok'], filesScope: [] };
 
@@ -10,7 +12,8 @@ describe('VerdictStore', () => {
   it('append → readAll round-trip', async () => {
     const s = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'ds-')), 'events.jsonl'));
     await s.append('RunStarted', 'r1', 't1', 'o', { configSnapshot: { model: 'm1' } });
-    const picked = await s.append('TaskPicked', 'r1', 't1', 'o', { taskSpec });
+    // hüküm: tsconfig.test kapsamı — append çıktısı union; testin yazdığı tip Envelope ile daraltılır
+    const picked = await s.append('TaskPicked', 'r1', 't1', 'o', { taskSpec }) as Envelope<'TaskPicked'>;
     expect(picked.payload.taskSpec.id).toBe('t1');
     expect(s.readAll()).toHaveLength(2);
   });

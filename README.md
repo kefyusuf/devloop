@@ -331,4 +331,64 @@ Tek policy eklemesi budur; diğer faz 4 kalemleri mevcut alanları kullanır. T�
 geldiğinden mevcut `policy.yaml` dosyaları geriye dönük uyumludur; policy değişiklikleri
 insan-onaylı review'e tabidir (§5.2.2).
 
+## Faz 5
+
+### decide → run bağlantısı (R25)
+
+- `devloop decide` kararı GERÇEK koşum kanıtına bağlar: `--run` verilmezse store'daki son eşleşen
+  `TaskPicked` koşumunun runId'si **auto-resolve** ile kullanılır; `--run <runId>` override; eşleşen
+  koşum yoksa ve `--run` verilmediyse **fail-closed hata** — sessiz `manual` yazımı yoktur, açık
+  `--run manual` tek manuel yoldur. Golden draft'lar böylece gerçek decide kararlarından beslenir
+  (uçtan uca zincir kanıtı: `tests/e2e/decisionPath.test.ts`).
+
+### SHIP batch (R26)
+
+- Sentineller tek kaynakta (`src/shell/sentinels.ts`): değer pin + tüketici drift koruması
+  (composeLessons/generator davranışları sabitlerle senkron — test kırılması bilinçli değişiklik demek).
+- `createGatewayOrChain`: tek ayak → düz gateway, çok ayak → `ChainedGateway`, hiç ayak →
+  GatewayError; CLI'ın 5 gateway kurulum sitesi tek helper'ı kullanır.
+- Tek tool-run seam: `runToolDockerAware` — mutationStage host dalı ona delegeler (host/docker
+  dalları tek kapıda).
+- **Canonical JSON** (`src/util/canonicalJson.ts`): evoId/goldenId hash seed'leri key-order
+  duyarlı DEĞİL — aynı içerik farklı anahtar sırasıyla aynı kimliği alır.
+- `parseDiff` satır-sonu whitespace toleransı + cross-fallback test tamamlaması (HTTP-error→fallback,
+  openai-primary symmetry — faz 3 T6 kalıntısı).
+- **Cross-fallback üretim hatası düzeltmesi (R26f):** `AnthropicGateway` kurucusu anahtarı
+  provider-koşullu okuyordu (`anthropic ? ANTHROPIC_API_KEY : LLM_API_KEY`) ama `createGateways`
+  ayak kapısı ANTHROPIC_API_KEY varlığına bakıyordu → openai-birincil policy'de anthropic yedek
+  ayağı daima anahtarsız kalıyor ve **openai→anthropic cross-fallback üretimde hiç çalışmıyordu**.
+  Kurucu artık daima `ANTHROPIC_API_KEY` okur (kalan `LLM_API_KEY` ölü koddu); fail-closed aynen.
+- Hijyen düzeltmesi (R26g — faz 3 T6 kalıntısı): `eval-` prefix'li koşumların (production eval
+  dâhil) evrim sinyal sayımına girmesi kapatıldı — eval kanıtı artık aday üretimini kirletmiyor.
+
+### Aktivasyon görünürlüğü (R27)
+
+`devloop status` çıktısına L3 aktivasyon alanları eklendi:
+
+| Alan | Anlamı |
+| --- | --- |
+| `goldenCount` | kabul edilmiş golden görev sayısı (`.devloop/golden/`) |
+| `goldenDrafts` | staging taslak sayısı (`.devloop/golden-drafts/`) |
+| `l3Active` | `goldenCount >= l3MinGoldenTasks` — evolve aday üretimi açık mı |
+| `lastEvalScore` | son production eval skoru (shadow/eval koşumları sayılmaz) |
+
+**L3 aktivasyon yolu:** golden kabul (`devloop golden accept`) ile görev setini `l3MinGoldenTasks`
+(varsayılan **50**) eşiğine ulaştırın → `l3Active=true` → `devloop evolve` otomatik aktifleşir.
+
+### Test tip kapsamı (R26h)
+
+`npm run typecheck:tests` (`npx tsc -p tsconfig.test.json`): tüm test dosyaları strict tip
+kapsamındadır — mevcut test tip hataları faz 5'te düzeltildi.
+
+### Kabul checklist (R28)
+
+| Kriter | Kanıt |
+| --- | --- |
+| ✅ (a) mevcut 267+1skip bozulmaz | `npx vitest run` — faz 5 kapanışında **296+1skip / 34 dosya** |
+| ✅ (b) decide fail-closed | `tests/cli/cli.test.ts` — "decide: eşleşen TaskPicked yok + --run yok → fail-closed hata" |
+| ✅ (c) E2E zinciri | `tests/e2e/decisionPath.test.ts` — decide auto-resolve → golden draft → accept → eval score 100 + validateChain ok |
+| ✅ (d) canonical JSON key-order | `tests/util/canonicalJson.test.ts` + invariants "canonical JSON değişmezi: aynı LLM mutasyon içeriği farklı key-sırasıyla → aynı evoId" |
+| ✅ (e) tsconfig strict | `npm run typecheck:tests` (`npx tsc -p tsconfig.test.json`) — vitest içinden spawn pahalı/fragman olduğundan build-level komut olarak kanılanır |
+| ✅ (f) sentinels drift pin'leri | `tests/shell/sentinels.test.ts` — üç sentinelin değer pin'i + sabit-üzerinden tüketici drift testleri |
+
 Detaylı tasarım: `docs/superpowers/specs/2026-11-18-ai-dev-loop-design.md`

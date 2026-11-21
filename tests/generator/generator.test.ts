@@ -40,11 +40,13 @@ describe('readRepoContext', () => {
 describe('LlmGeneratorBackend', () => {
   it('repo bağlamı + feedback + dersler prompt\'a girer', async () => {
     let captured = '';
-    const gw: LlmGateway = { complete: vi.fn(async (req: { user: string; schema: z.Zod<unknown> }) => {
+    // hüküm: tsconfig.test kapsamı — zod v3 dışa aktarımı ZodType (z.Zod genel ad alan üyesi değil)
+    const gw: LlmGateway = { complete: vi.fn(async (req: { user: string; schema: z.ZodType<unknown> }) => {
       captured = req.user;
       return { data: { intent: 'i', rejectedAlternatives: [], testEvidence: 'e', files: [{ path: 'src/math.ts', content: 'export const sum=(a:number,b:number)=>a+b;' }] }, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
     }) } as unknown as LlmGateway;
-    const feedback: Finding[] = [{ id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, evidence: { file: 'a.ts' }, suggestion: 'unused var' }];
+    // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+    const feedback: Finding[] = [{ id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, corroborated: false, evidence: { file: 'a.ts' }, suggestion: 'unused var' }];
     // R1 (bütçe doğruluğu): backend ctor gateway'siz kurulur — gateway ctx.gateway'ten gelir.
     const backend = new LlmGeneratorBackend(undefined as never);
     const dir = mkdtempSync(join(tmpdir(), 'gb-'));
@@ -78,7 +80,8 @@ describe('LlmGeneratorBackend playbook bağlamı (R18)', () => {
     }) } as unknown as LlmGateway;
     return { gw, captured: () => captured };
   };
-  const finding: Finding = { id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, evidence: { file: 'a.ts' }, suggestion: 'unused var' };
+  // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+  const finding: Finding = { id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, corroborated: false, evidence: { file: 'a.ts' }, suggestion: 'unused var' };
 
   it('applied playbook-generator json → prompt GENERATOR PLAYBOOK başlığı + title/note içeriği taşır; feedbackBlock\'tan önce konumlanır', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gpb-'));

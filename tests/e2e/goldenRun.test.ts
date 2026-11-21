@@ -12,6 +12,8 @@ import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { StageResult, ReviewStage } from '../../src/contracts/review.js';
 import type { Artifact } from '../../src/contracts/schemas.js';
+// hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcısı
+import { queryTyped } from '../helpers/events.js';
 
 const base = loadConfig(process.cwd()).policy;
 // Faz 2 (R2): golden koşum gerçek montaj biçimine geçti — advisory'de llm-ensemble VAR
@@ -92,7 +94,8 @@ describe('E2E golden koşu (A6 değişmezleri)', () => {
   it('untracked-file kanıtı: yeni dosya diff\'te görünür (boş diff yok)', async () => {
     const { repo, store } = freshRepo();
     await new Orchestrator(deps(repo, store)).run(join(repo, 'tasks.json'));
-    const art = store.query({ type: 'ArtifactProduced' })[0].payload.artifact;
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const art = queryTyped(store, { type: 'ArtifactProduced' })[0].payload.artifact;
     expect(art.diff.length).toBeGreaterThan(0);
     expect(art.diff).toContain('src/repeat.ts');
   });

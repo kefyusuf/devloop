@@ -46,7 +46,9 @@ export function parseDiff(diff: string): Array<{ path: string; addedContent: str
   // (trailing boşluk yola sızmaz). CRLF zaten satır bazında `\r` strip'iyle işlenir.
   const reDel = /^--- (?:a\/(.+?)[ \t]*|\/dev\/null)$/; // başlık adayı (yalnız onay çiftiyle kapsam açar)
   const reAdd = /^\+\+\+ b\/(.+?)[ \t]*$/;              // onay satırı
-  const reDevNull = /^\+\+\+ \/dev\/null$/;      // silinen dosya: yol yok
+  // R26e (faz 5 T6): reDevNull da R22 ailesine katıldı — `+++ /dev/null ` (trailing ws) başlık
+  // sayılmıyordu; hunk içindeki ws'li satır İÇERİK sanılıp `++ /dev/null` olarak önceki dosyaya akıyordu.
+  const reDevNull = /^\+\+\+ \/dev\/null[ \t]*$/; // silinen dosya: yol yok (trailing ws toleranslı)
   const open = (path: string): void => { current = path; out.set(path, out.get(path) ?? []); };
   for (const raw of diff.split('\n')) {
     const line = raw.replace(/\r$/, ''); // CRLF toleransı (eski kod trim ile klasifiye ediyordu)

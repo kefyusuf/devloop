@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { z } from 'zod';
-import { createGateway, createGateways, ChainedGateway, altModelFor } from '../../src/gateway/factory.js';
+import { createGateway, createGateways, createGatewayOrChain, ChainedGateway, altModelFor } from '../../src/gateway/factory.js';
 import { AnthropicGateway, GatewayError } from '../../src/gateway/gateway.js';
 import { OpenAIGateway } from '../../src/gateway/openai.js';
 import { loadConfig } from '../../src/config/config.js';
@@ -39,6 +39,8 @@ const anthropicResponse = (text: string, status = 200) => new Response(
 const openaiResponse = (text: string, status = 200) => new Response(
   JSON.stringify({ choices: [{ message: { content: text } }], usage: { prompt_tokens: 100, completion_tokens: 50 } }), { status });
 const fallbackPolicy = { ...anthropicPolicy, llm: { ...anthropicPolicy.llm, crossProviderFallback: true } };
+// R26f (faz 5 T6): openai birincil + anthropic ikinci ayak (cross-fallback ayna polisi)
+const openaiFallbackPolicy = { ...openaiPolicy, llm: { ...openaiPolicy.llm, crossProviderFallback: true } };
 
 describe('createGateways + ChainedGateway (R21 cross-provider fallback)', () => {
   afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
@@ -101,7 +103,8 @@ describe('createGateways + ChainedGateway (R21 cross-provider fallback)', () => 
     expect(legs).toHaveLength(1);
     expect(legs[0]).toBeInstanceOf(AnthropicGateway);
     expect(legs[0]).not.toBeInstanceOf(ChainedGateway);
-    const fetchMock = vi.fn(async () => anthropicResponse('x', 500));
+    // hüküm: tsconfig.test kapsamı — sıfır-parametre mock'un calls tuple'ı boş; rest parametresi gerekli
+    const fetchMock = vi.fn(async (..._args: unknown[]) => anthropicResponse('x', 500));
     vi.stubGlobal('fetch', fetchMock);
     await expect(legs[0].complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
     expect(fetchMock.mock.calls.every((c) => String(c[0]).includes('api.anthropic.com'))).toBe(true);
@@ -133,11 +136,81 @@ describe('createGateways + ChainedGateway (R21 cross-provider fallback)', () => 
     expect(message).toContain('gpt-4.1'); // openai ayak model raporu
   });
 
+  // R26f (faz 5 T6): OpenAI HTTP-error → fallback (faz 3 T6 kalıntısı). OpenAI adapter non-2xx'i
+  // (openai.ts: `!res.ok` → lastError='HTTP <status>' → sonunda GatewayError) GatewayError'a
+  // klasifiye eder; ChainedGateway ayak hatasını yakalayıp sonraki ayağa geçer. (b)'nin aynası —
+  // ayaklar ters: openai birincil 500 → anthropic ikinci ayak cevabı kazanır.
+  it('(f) R26f: openai ayak HTTP 500 → anthropic ayak fallback başarılı (openai-primary cross-fallback)', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'k-anthropic');
+    vi.stubEnv('OPENAI_API_KEY', 'k-openai');
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return url.includes('api.openai.com') ? openaiResponse('x', 500) : anthropicResponse('{"answer":"ok"}');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const gateway = new ChainedGateway(createGateways(openaiFallbackPolicy));
+    const r = await gateway.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' });
+    expect(r.data.answer).toBe('ok');
+    expect(r.usage.inputTokens).toBe(100); // usage başarılı ayaktan (anthropic)
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('api.openai.com'))).toBe(true);
+    expect(urls.some((u) => u.includes('api.anthropic.com'))).toBe(true);
+  });
+
+  // R26f openai-primary symmetry (faz 5 T6): zincir openai birincilken de çalışır — (b)'de anthropic
+  // birincil direkt başarılıydı; ayna: openai birincil başarılı → anthropic ikinci ayak HİÇ çağrılmaz
+  // (fallback tetiklenmez), cevap openai ayağından gelir.
+  it('(g) R26f openai-primary symmetry: openai birincil başarılı → anthropic ikinci ayak hiç çağrılmaz', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'k-anthropic');
+    vi.stubEnv('OPENAI_API_KEY', 'k-openai');
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return url.includes('api.openai.com') ? openaiResponse('{"answer":"ok-openai"}') : anthropicResponse('{"answer":"ok-anthropic"}');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const gateway = new ChainedGateway(createGateways(openaiFallbackPolicy));
+    const r = await gateway.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' });
+    expect(r.data.answer).toBe('ok-openai'); // birincil ayak cevabı
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.every((u) => u.includes('api.openai.com'))).toBe(true);
+    expect(urls.some((u) => u.includes('api.anthropic.com'))).toBe(false);
+  });
+
   it('hiçbir ayak yok (env tamamen temiz) → createGateways [] + ChainedGateway([]) complete GatewayError fırlatır', async () => {
     vi.stubEnv('ANTHROPIC_API_KEY', '');
     vi.stubEnv('OPENAI_API_KEY', '');
     expect(createGateways(fallbackPolicy)).toHaveLength(0);
     const gateway = new ChainedGateway(createGateways(fallbackPolicy));
     await expect(gateway.complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
+  });
+});
+
+// R26b (faz 5 T3): CLI 5 gateway kurulum sitesinin duplike ternary'si tek kapıya iner —
+// createGatewayOrChain seçim sözleşmesi: 0 ayak → GatewayError (fail-closed, KURULUM anında);
+// 1 ayak → düz gateway (chain sarması YOK); çok ayak → ChainedGateway. BudgetedGateway sarması
+// çağıran tarafta kalır (helper ham gateway/zincir döner).
+describe('createGatewayOrChain (R26b)', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('0 ayak (anahtarlar temiz) → GatewayError: Kullanılabilir gateway ayak yok (anahtarlar env\'de eksik)', () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
+    vi.stubEnv('OPENAI_API_KEY', '');
+    expect(() => createGatewayOrChain(anthropicPolicy)).toThrow(GatewayError);
+    expect(() => createGatewayOrChain(anthropicPolicy)).toThrow("Kullanılabilir gateway ayak yok (anahtarlar env'de eksik)");
+  });
+
+  it('1 ayak → düz gateway örneği (ChainedGateway DEĞİL)', () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'k-anthropic');
+    vi.stubEnv('OPENAI_API_KEY', '');
+    const gateway = createGatewayOrChain(anthropicPolicy); // cross=false → tek ayak
+    expect(gateway).toBeInstanceOf(AnthropicGateway);
+    expect(gateway).not.toBeInstanceOf(ChainedGateway);
+  });
+
+  it('2 ayak (crossProviderFallback + iki anahtar) → ChainedGateway örneği', () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'k-anthropic');
+    vi.stubEnv('OPENAI_API_KEY', 'k-openai');
+    const gateway = createGatewayOrChain(fallbackPolicy);
+    expect(gateway).toBeInstanceOf(ChainedGateway);
   });
 });

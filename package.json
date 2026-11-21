@@ -8,7 +8,8 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "commander": "^12.1.0",
