@@ -32,6 +32,10 @@ const P = {
     // eval harness için zayıf sinyal). `.default([])`: eski store satırları (alan yok) okunabilir kalır.
     invalid: z.array(z.string()).default([]),
     configSnapshot: z.record(z.unknown()), comparedTo: z.string().optional(),
+    // R30 (faz 6 T2): multi-repo eval — hedef repo yolu payload KÖKÜNE yazılır (configSnapshot'a
+    // DEĞİL; aggregate perRepo alanı payload.repo'dan okunur). Additive optional: tek-repo koşumda
+    // TANIMSIZ (alan hiç yazılmaz) — geriye-uyumlu, eski store satırları da alanı taşımaz.
+    repo: z.string().optional(),
   // R22 (faz 4 T3): çapraz değişken invariant — passed + failed goldenCount ile toplamı eşleşmeli
   // (perTask.length = goldenCount sözleşmesinin şema düzeyinde zorlanması; yazım katı parse, okuma
   // safeParse olduğu için tutarsız eski satırlar da okuma anında elenir).

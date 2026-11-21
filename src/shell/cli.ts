@@ -295,13 +295,73 @@ export function buildCli(workDir = process.cwd()): Command {
     .description('golden task eval — production pipeline veya aday policy karşılaştırması (shadow)')
     .option('--candidate <policyDir>', 'aday policy dizini (policy.yaml içerir)')
     .option('--full', 'ensemble dahil koş (LLM çağrısı yapar)')
-    .action(async (opts: { candidate?: string; full?: boolean }) => {
+    .option('--repos <paths>', 'multi-repo eval (R30): virgülle ayrık hedef repo yolları — golden set agregasyonu')
+    .action(async (opts: { candidate?: string; full?: boolean; repos?: string }) => {
       // Fail-closed: candidate policy.yaml içermiyorsa loadConfig sessizce DEFAULT_POLICY'ye düşer —
       // farkında olmadan varsayılan policy'yle karşılaştırma yapmak R9 ölçümünü geçersiz kılar.
       if (opts.candidate && !existsSync(join(opts.candidate, 'policy.yaml'))) {
         throw new Error(`aday policy dizininde policy.yaml yok: ${opts.candidate}`);
       }
       const effPolicy = opts.candidate ? loadConfig(opts.candidate).policy : loadConfig(repoDir()).policy;
+      // R30 (faz 6 T2): multi-repo eval — golden set agregasyonu (Yaklaşım 1, spec Revizyon 6).
+      // AYRIK kod yolu: `--repos` yoksa aşağıdaki tek-repo akışı AYNEN çalışır (bugünkü davranış
+      // sıfır değişiklik — döngü tek-repo kısayoluyla birleştirilmedi).
+      if (opts.repos !== undefined) {
+        const repos = opts.repos.split(',').map((p) => p.trim()).filter((p) => p.length > 0).map((p) => resolve(p));
+        if (repos.length === 0) throw new Error('--repos boş: en az bir hedef repo yolu gerekli');
+        // Fail-closed preflight — koşum başlamadan TÜM girişler doğrulanır (kısmi koşum/kanıt yok).
+        for (const repo of repos) {
+          if (!existsSync(repo)) throw new Error(`hedef repo yolu yok: ${repo}`);
+        }
+        const goldenCounts = repos.map((r) => loadGoldenTasks(r).tasks.length);
+        if (goldenCounts.reduce((a, b) => a + b, 0) === 0) {
+          throw new Error('hiçbir hedef repoda golden task yok'); // boş koşum anlamsız — sessiz skor-0 raporu değil
+        }
+        // --full: gateway repo-bağımsız TEK kurulum — tüm hedef repo'lar aynı gateway'i paylaşır.
+        const gateway = opts.full ? createGatewayOrChain(effPolicy) : undefined;
+        // I2 donmuş yargıcı (aynen): reviewerLessons ORCHESTRATOR kompozisyonundan (mem + applied
+        // playbook'lar) — her repo aynı yargıçla ölçülür; hedef repo'nun kendi lessons/playbook'ları
+        // KARIŞMAZ (değişken yargıcıyla ölçüm geçersizleşir). R22: composeReviewerLessons filtresi.
+        const reviewerLessons = gateway ? composeReviewerLessons([memory(), loadAppliedPlaybooks(repoDir())]) : undefined;
+        const perRepo: Array<EvalSummary & { repo: string }> = [];
+        for (const repo of repos) {
+          // Per-repo adapter/stages — hedef repo yoluyla (tek-repo kurulumun birebir karşılığı).
+          const adapter = new TypeScriptAdapter(effPolicy, repo); // R13 + I2: sandbox moduna uyar
+          const stages: ReviewStage[] = [
+            new RiskTriageStage(effPolicy), new StaticGatesStage(adapter), new TestGateStage(adapter),
+            new SecretScanStage(), new MutationStage(effPolicy, undefined, repo),
+          ];
+          if (gateway && reviewerLessons) {
+            stages.push(new LlmEnsembleStage(
+              new LlmReviewerStage(gateway, reviewerLessons),
+              new LlmReviewerAltStage(gateway, { model: altModelFor(effPolicy), reviewerLessons }), // I3: provider-aware alt model
+              effPolicy,
+            ));
+          }
+          // PipelineConfigError penceresi: advisory yalnız --full'da policy'den alınır (tek-repo kuralı aynen).
+          const pipeline = new ReviewPipeline(stages, { ...effPolicy, gates: effPolicy.gates, advisory: opts.full ? effPolicy.advisory : [] });
+          // Hedef repo SALT-OKUNUR: tüm kanıt (EvalRun, TaskPicked, ...) orchestrator store'una
+          // (store() — cwd repo) yazılır; hedef .devloop/'una sıfır yazım.
+          const summary = await runEval({
+            repoPath: repo, pipeline, policy: effPolicy, store: store(),
+            l3MinGoldenTasks: effPolicy.l3MinGoldenTasks,
+            ...(opts.candidate ? { candidate: { label: opts.candidate } } : {}),
+            repo,
+          });
+          perRepo.push({ ...summary, repo });
+        }
+        // Aggregate — weightedScore = Σ(scoreᵢ·nᵢ)/Σnᵢ (n=goldenCount; 0 task'lı repo ağırlığa
+        // katılmaz, perRepo'da açıkça raporlanır — sessiz hariç tutum yok; hüküm: 1 ondalık
+        // yuvarlama EvalSummary.score ile aynı sunum kuralı). Aggregate'te l3Active YOK —
+        // L3 kapı hükmü: birleşik set eşiği kapıyı AÇMAZ (evolve kendi-repo golden setiyle kalır).
+        const totalTasks = perRepo.reduce((a, s) => a + s.goldenCount, 0);
+        const totalPassed = perRepo.reduce((a, s) => a + s.passed, 0);
+        const totalFailed = perRepo.reduce((a, s) => a + s.failed, 0);
+        const weightedScore = totalTasks === 0 ? 0 : Math.round(perRepo.reduce((a, s) => a + s.score * s.goldenCount, 0) / totalTasks * 10) / 10;
+        const mergedInvalid = perRepo.flatMap((s) => s.invalid);
+        console.log(JSON.stringify({ perRepo, aggregate: { totalTasks, totalPassed, totalFailed, weightedScore, mergedInvalid } }, null, 2));
+        return;
+      }
       const adapter = new TypeScriptAdapter(effPolicy, repoDir()); // R13 + I2: eval pipeline'ı da sandbox moduna uyar
       const stages: ReviewStage[] = [
         new RiskTriageStage(effPolicy), new StaticGatesStage(adapter), new TestGateStage(adapter),

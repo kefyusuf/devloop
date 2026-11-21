@@ -38,6 +38,9 @@ export function scoreEval(
 export async function runEval(args: {
   repoPath: string; pipeline: ReviewPipeline; policy: Policy; store: VerdictStore;
   candidate?: { label: string }; l3MinGoldenTasks: number;
+  // R30 (faz 6 T2): multi-repo eval — hedef repo yolu EvalRun payload KÖKÜNE yazılır
+  // (aggregate perRepo alanı payload.repo'dan okunur); tek-repo koşumda verilmez → alan yazılmaz.
+  repo?: string;
 }): Promise<EvalSummary> {
   const { tasks, invalid } = loadGoldenTasks(args.repoPath);
   // R22 (faz 4 T3): seed'e randomUUID — aynı repo + aynı golden setten arka arkaya iki koşum
@@ -78,6 +81,7 @@ export async function runEval(args: {
   await args.store.append('EvalRun', runId, '-', 'eval', {
     evalId: summary.evalId, goldenCount: summary.goldenCount, passed, failed, score, invalid,
     perTask: summary.perTask, configSnapshot, ...(comparedTo ? { comparedTo } : {}),
+    ...(args.repo ? { repo: args.repo } : {}), // R30 (faz 6 T2): multi-repo hedef repo — payload kökü
   });
   return summary;
 }
