@@ -353,8 +353,13 @@ insan-onaylı review'e tabidir (§5.2.2).
   duyarlı DEĞİL — aynı içerik farklı anahtar sırasıyla aynı kimliği alır.
 - `parseDiff` satır-sonu whitespace toleransı + cross-fallback test tamamlaması (HTTP-error→fallback,
   openai-primary symmetry — faz 3 T6 kalıntısı).
-- Üretim hatası düzeltmesi (R26g): `eval-` prefix'li koşumların (production eval dâhil) evrim sinyal
-  sayımına girmesi kapatıldı — eval kanıtı artık aday üretimini kirletmiyor.
+- **Cross-fallback üretim hatası düzeltmesi (R26f):** `AnthropicGateway` kurucusu anahtarı
+  provider-koşullu okuyordu (`anthropic ? ANTHROPIC_API_KEY : LLM_API_KEY`) ama `createGateways`
+  ayak kapısı ANTHROPIC_API_KEY varlığına bakıyordu → openai-birincil policy'de anthropic yedek
+  ayağı daima anahtarsız kalıyor ve **openai→anthropic cross-fallback üretimde hiç çalışmıyordu**.
+  Kurucu artık daima `ANTHROPIC_API_KEY` okur (kalan `LLM_API_KEY` ölü koddu); fail-closed aynen.
+- Hijyen düzeltmesi (R26g — faz 3 T6 kalıntısı): `eval-` prefix'li koşumların (production eval
+  dâhil) evrim sinyal sayımına girmesi kapatıldı — eval kanıtı artık aday üretimini kirletmiyor.
 
 ### Aktivasyon görünürlüğü (R27)
 
@@ -379,7 +384,7 @@ kapsamındadır — mevcut test tip hataları faz 5'te düzeltildi.
 
 | Kriter | Kanıt |
 | --- | --- |
-| ✅ (a) mevcut 267+1skip bozulmaz | `npx vitest run` — faz 5 kapanışında **294+1skip / 34 dosya** |
+| ✅ (a) mevcut 267+1skip bozulmaz | `npx vitest run` — faz 5 kapanışında **296+1skip / 34 dosya** |
 | ✅ (b) decide fail-closed | `tests/cli/cli.test.ts` — "decide: eşleşen TaskPicked yok + --run yok → fail-closed hata" |
 | ✅ (c) E2E zinciri | `tests/e2e/decisionPath.test.ts` — decide auto-resolve → golden draft → accept → eval score 100 + validateChain ok |
 | ✅ (d) canonical JSON key-order | `tests/util/canonicalJson.test.ts` + invariants "canonical JSON değişmezi: aynı LLM mutasyon içeriği farklı key-sırasıyla → aynı evoId" |
