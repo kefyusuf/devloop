@@ -1,7 +1,7 @@
 # AI Geliştirme Döngüsü Sistemi — Tasarım Dokümanı (Spec)
 
 - **Tarih:** 2026-11-18
-- **Durum:** v1 + Faz 2 + Faz 3 tamamlandı ve main'e merge edildi (55e18ac, 219+1skip); Revizyon 4 (faz 4) tasarım onay aşamasında
+- **Durum:** v1 + Faz 2 + Faz 3 + Faz 4 tamamlandı ve main'e merge edildi (44aa6f9, 267+1skip); Revizyon 5 (faz 5) tasarım onay aşamasında
 - **Çalışma adı:** `devloop` *(placeholder — karar kutusu 9.3)*
 - **Ölçek:** Mimari (architectural) — yeni sistem, yeşil alan
 
@@ -481,3 +481,41 @@ Multi-repo eval; L4/L5 (fine-tuning, self-play — veri/volume gereksinimi); san
 `llm.crossProviderFallback: z.boolean().default(false)` — tek ekleme; diğer faz 4 kalemleri mevcut alanları kullanır (yeni policy alanı yok).
 
 ---
+
+---
+
+## Revizyon 5 — Faz 5: Veri Yolu Kapanışı, SHIP Kalıntıları ve Aktivasyon Görünürlüğü (2026-11-20)
+
+Faz 4 tamamlandı (merge 44aa6f9, 267+1skip). Faz 5 kapsamı: **B (R25–R29)** — L3 veri yolu kapanışı + SHIP kalıntıları batch + aktivasyon görünürlüğü. Hükümler: kapsam B varsayılan onay; 5d/5e flag'li doğrulamalar (DEVLOOP_DOCKER=1, cross-provider canlı) ortam hazır olduğunda koşulur — bu fazda yeni kod gerektirmez, faz kapanış notu; multi-repo eval ve L4/L5 faz 6+/uzak hedefe ertelendi.
+
+### R25 — decide → gerçek run bağlantısı (L3 veri yolu kapanışı)
+
+- **Çözümleme sırası:** `decide --task <id>` — store'da `taskId: '<id>'`'li son `TaskPicked` event'inin `run_id`'si otomatik çözülür; `--run <runId>` opsiyonu override; eşleşen TaskPicked yok ve `--run` yok → hata "görev için koşum bulunamadı — önce run, sonra decide veya --run ile belirtin". `runId: 'manual'` yalnız `--run manual` ile açıkça yazılır (sessiz 'manual' yok — faz 4 final review keşfinin kapanması).
+- **E2E kanıt (R17 vaadinin tamamlanması):** orchestrator-seeded gerçek koşum (gates-pass + PRCreated) → `decide --task t1 --accept --reason real-issue-accepted` → HumanDecision gerçek runId'li → `golden draft` taslak üretir → `golden accept` → `devloop eval` golden görevi görür (skor 100) — **L3 veri yolu ilk kez gerçek uçtan uca kanıtlanır**.
+- A5 aynen: golden draft yalnız staging'e yazar; validateChain tüm zincirde ok.
+
+### R26 — SHIP kalıntıları batch (faz 1-4 SHIP-AS-IS listesi)
+
+- **Shared sentinels:** `src/shell/sentinels.ts` — `REVIEWER_DERSI_YOK = 'Reviewer dersi yok.'`, `GENERATOR_PLAYBOOK_YOK = 'Generator playbook önerisi yok.'` sabitleri; composeLessons + evolve (generatorContext üretimi) + generator (exact-sentinel gating) tüketir (T2/T3 drift riski kapanır).
+- **`createGatewayOrChain(policy)`:** factory'de — tek ayak → düz gateway; çok ayak → `ChainedGateway`; boş → GatewayError; CLI 5 gateway sitesi tek helper'ı kullanır (duplike ternary gider).
+- **Tek tool-run seam:** `runToolDockerAware` tek kapı — mutationStage defaultRunner host dalı ona delegeler (faz 3 T5'ten beri duplike olan host çözümleme konsolide edilir; host/docker dalları fonksiyon içinde).
+- **Canonical JSON:** `src/util/canonicalJson.ts` — `canonicalJson(value)` (sorted keys, recursive); evoId + goldenId hash seed'lerinde kullanılır (key-order duyarlılığı kapanır — faz 3/4 deferred minors).
+- **parseDiff:** reDevNull `[ \t]*$` toleranslı; header ws toleransı faz 4'ten aynen.
+- **Cross-fallback testleri:** OpenAI HTTP-error→fallback test (500 → fallback model başarılı — faz 3 T6 kalıntısı); openai-primary symmetry test (openai birincil + anthropic ikinci ayak).
+- **eval- sinyal filtresi:** evrim adayları (test-diff sayımı ve karar bucket'ları) `eval-` prefix'li run_id'leri de hariç tutar — production eval koşumları sinyali kirletmez (faz 3 T6 kalıntısı).
+- **tsconfig.test.json:** test dosyaları tsc strict kapsamına alınır (ayrı tsconfig.test.json; mevcut test tip hataları düzeltilir) — faz 3'ten beri ertelenen kalem.
+
+### R27 — Golden ≥50 aktivasyon görünürlüğü
+
+- `devloop status` alanları: `goldenCount` (golden/), `goldenDrafts` (staging), `l3Active` (goldenCount ≥ l3MinGoldenTasks), `lastEvalScore` (son production EvalRun score), mevcut alanlarla birlikte.
+- README: L3 aktivasyon yolu dokümante ("golden accept ile ≥50'ye ulaşınca evolve otomatik aktifleşir") — faz 5 kapanışında güncellenir.
+
+### R28 — Test stratejisi ve kabul kriterleri (faz 5)
+
+- Yeni testler: decide auto-resolve + `--run` override + bulunamadı hatası; E2E veri-yolu zinciri (gerçek run → decide → golden draft → accept → eval skor 100 — L3 veri yolu ilk kez uçtan uca); sentinels drift koruması (compose/generator davranışları değişmez); createGatewayOrChain seçim testleri (tek/çok/boş); canonical JSON key-order testi; parseDiff ws; HTTP-error→fallback; openai-primary symmetry; eval- sinyal filtresi; tsconfig.test.json dahilinde tüm test dosyaları strict geçer.
+- **Kabul kriterleri:** mevcut 267+1skip bozulmaz (hüküm notlu güncellemeler hariç); decide without run fail-closed; L3 veri yolu E2E zinciri kanıtlı; canonical JSON key-order testi; tsconfig.test.json tüm testler strict geçer; README faz 5 bölümü.
+- 5d/5e flag'li testler (DEVLOOP_DOCKER=1 gerçek Stryker-in-container, cross-provider canlı koşum) ortam hazır olduğunda koşulur — faz kapanış notu, yeni kod gerekmez.
+
+### R29 — Bilinçli ertelemeler (faz 6+)
+
+Multi-repo eval; L4/L5 (fine-tuning, self-play); policy-hot-reload; golden draft otomatik-accept; sandbox'ın LLM spawn'larına genişletmesi; 'yok.' filter'ın LLM içerik üretimine karşı semantic analiz yükseltmesi (per-line substring faz 5 kontratı).
