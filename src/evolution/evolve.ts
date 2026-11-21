@@ -10,6 +10,7 @@ import type { VerdictStore } from '../store/store.js';
 import type { EvalSummary } from '../eval/evalRunner.js';
 import type { DevloopEvent } from '../contracts/events.js';
 import type { LlmGateway } from '../gateway/gateway.js';
+import { GENERATOR_PLAYBOOK_YOK, REVIEWER_PLAYBOOK_YOK } from '../shell/sentinels.js'; // R26a: sentineller tek kaynakta
 
 export interface EvolutionCandidate {
   evoId: string;
@@ -235,7 +236,7 @@ export function candidatePlaybookProvider(ctx: EvolveContext): PlaybookProvider 
       try { const c = JSON.parse(readFileSync(join(ctx.candidateDir, f), 'utf8')); if (c.kind === 'playbook-reviewer') notes.push(`- ${c.title}`); } catch { /* bozuk aday atılır */ }
     }
   }
-  return { reviewerContext: () => notes.length === 0 ? 'Reviewer playbook önerisi yok.' : notes.map((n) => `- ${n}`).join('\n') };
+  return { reviewerContext: () => notes.length === 0 ? REVIEWER_PLAYBOOK_YOK : notes.map((n) => `- ${n}`).join('\n') };
 }
 
 // I2 (final fix wave): APPLY edilmiş playbook'lar (applyEvolution'un yazdığı
@@ -267,7 +268,7 @@ export function loadAppliedPlaybooks(repoPath: string): {
     }
   }
   return {
-    reviewerContext: () => reviewerNotes.length === 0 ? 'Reviewer playbook önerisi yok.' : reviewerNotes.join('\n'),
-    generatorContext: () => generatorNotes.length === 0 ? 'Generator playbook önerisi yok.' : generatorNotes.join('\n'),
+    reviewerContext: () => reviewerNotes.length === 0 ? REVIEWER_PLAYBOOK_YOK : reviewerNotes.join('\n'),
+    generatorContext: () => generatorNotes.length === 0 ? GENERATOR_PLAYBOOK_YOK : generatorNotes.join('\n'),
   };
 }

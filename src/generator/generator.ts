@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
+import { GENERATOR_PLAYBOOK_YOK } from '../shell/sentinels.js'; // R26a: sentineller tek kaynakta
 import type { LlmGateway } from '../gateway/gateway.js';
 import type { Artifact, Finding, TaskSpec } from '../contracts/schemas.js';
 import { ArtifactSchema } from '../contracts/schemas.js';
@@ -77,7 +78,7 @@ export class LlmGeneratorBackend implements GeneratorBackend {
     // (Türkçe eksiklik ifadesi — tam da evrim notlarının kullandığı dil) sessizce düşürüyordu.
     // Boş bağlam da blok kurmaz.
     const playbook = this.playbookProvider?.generatorContext() ?? '';
-    const playbookBlock = playbook && playbook !== 'Generator playbook önerisi yok.'
+    const playbookBlock = playbook && playbook !== GENERATOR_PLAYBOOK_YOK
       ? `GENERATOR PLAYBOOK (insan-onaylı kurallar):\n${playbook}`
       : '';
     const feedbackBlock = ctx.feedback.length === 0 ? '' :

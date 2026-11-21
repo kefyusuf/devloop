@@ -1,4 +1,5 @@
 import { writeFileSync } from 'node:fs';
+import { REVIEWER_DERSI_YOK } from '../shell/sentinels.js'; // R26a: sentineller tek kaynakta
 import type { VerdictStore } from '../store/store.js';
 import type { LessonsProvider } from '../generator/generator.js';
 import type { EventPayloadMap } from '../contracts/events.js';
@@ -45,7 +46,7 @@ export class LessonMemory implements LessonsProvider {
 
   reviewerContext(): string {
     const lessons = this.active('reviewer');
-    return lessons.length === 0 ? 'Reviewer dersi yok.' : lessons.map((l) => `- [${l.scope}] ${l.rule}`).join('\n');
+    return lessons.length === 0 ? REVIEWER_DERSI_YOK : lessons.map((l) => `- [${l.scope}] ${l.rule}`).join('\n');
   }
 
   render(): void {
