@@ -53,6 +53,20 @@ function lastEvalRun(s: VerdictStore, kind: 'production' | 'shadow'): EvalRunEve
   return filtered[filtered.length - 1];
 }
 
+// R25 (faz 5 T1): decide → GERÇEK run bağlantısı — L3 veri yolu (golden draft acceptedRuns:
+// accept ∩ PRCreated) gerçek decide kararlarıyla kapanır. taskId'ye göre store'daki SON eşleşen
+// TaskPicked'in run_id'si döner (dosya sırası kronolojiktir → pop() en yeni koşum); eşleşme yoksa
+// null (fail-closed çağrı noktasında). TaskPicked zarfı task_id, payload.taskSpec.id ORCHESTRATOR
+// GÖREV ID'sidir (multi-run store'da taskId tekil değil — taskSpec.id filtresi plan kontratıdır);
+// 'manual' sentinel'i BURAYA girmez: yalnız decide '--run manual' explicit yolu yazar.
+type TaskPickedEvent = Extract<DevloopEvent, { type: 'TaskPicked' }>;
+function resolveRunIdForTask(s: VerdictStore, taskId: string): string | null {
+  const picked = s.query({ type: 'TaskPicked' })
+    .filter((e): e is TaskPickedEvent => e.type === 'TaskPicked' && e.payload.taskSpec.id === taskId)
+    .pop();
+  return picked ? picked.run_id : null;
+}
+
 export function buildCli(workDir = process.cwd()): Command {
   const program = new Command();
   program.name('devloop').description('AI geliştirme + otomatik review döngüsü (trusted repos only)');
@@ -194,12 +208,19 @@ export function buildCli(workDir = process.cwd()): Command {
     console.log('Öneri kaydedildi (ProposalCreated) + PROPOSAL.md yazıldı — insan onayı bekler.');
   });
 
+  // R25 (faz 5 T1): decide → gerçek run bağlantısı (fail-closed). '--run' verilirse AYNEN
+  // kullanılır (auto-resolve atlanır; '--run manual' tek explicit 'manual' yolu); verilmezse
+  // store'daki son eşleşen TaskPicked'in run_id'si auto-resolve edilir; çözülemezse fail-closed
+  // hata — sessiz 'manual' yazımı YOK (faz 4 final review keşfi bu kontratla kapanır).
   program.command('decide').requiredOption('--task <id>').option('--accept').option('--reject')
+    .option('--run <runId>', 'run_id (auto-resolve override; manuel karar için --run manual)')
     .requiredOption('--reason <reason>').option('--note <note>').option('--findings <ids>')
-    .action(async (opts: { task: string; accept?: boolean; reject?: boolean; reason: string; note?: string; findings?: string }) => {
+    .action(async (opts: { task: string; accept?: boolean; reject?: boolean; run?: string; reason: string; note?: string; findings?: string }) => {
       const decision = opts.accept ? 'accept' : opts.reject ? 'reject' : null;
       if (!decision) throw new Error('--accept veya --reject gerekli');
-      await store().append('HumanDecision', 'manual', opts.task, 'human', {
+      const runId = opts.run ?? resolveRunIdForTask(store(), opts.task);
+      if (!runId) throw new Error(`Görev için koşum bulunamadı: ${opts.task} — önce run, sonra decide veya --run ile belirtin`);
+      await store().append('HumanDecision', runId, opts.task, 'human', {
         decision, reason: opts.reason as never, note: opts.note,
         parentFindingEventIds: (opts.findings ?? '').split(',').filter(Boolean),
       });

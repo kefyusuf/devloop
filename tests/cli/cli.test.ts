@@ -8,6 +8,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 describe('CLI', () => {
+  // hüküm (faz 5 T1, R25): decide artık gerçek run bağlantısı kurar — auto-resolve (son eşleşen
+  // TaskPicked'in run_id'si) çözülemezse fail-closed hata (sessiz 'manual' yazımı YOK). Bu testin
+  // seed'inde TaskPicked YOKTUR (kontratı HumanDecision payload alanlarıdır, run çözümü değil);
+  // explicit '--run r1' ile karar kanıtı aynen yazılır — payload sözleşmesi değişmedi.
   it('decide → HumanDecision (parent bulgu ile)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli-'));
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
@@ -16,9 +20,61 @@ describe('CLI', () => {
     // Düzeltme (plan hatası): commander 12'de { from: 'user' } TÜM argv'yı kullanıcı argümanı sayar;
     // ['node', 'devloop', ...] + from:'user' → "unknown command 'node'" (kanıt: task-13-report.md).
     // from:'node' (varsayılan) argv[0..1]'i kırpar — üretimdeki parseAsync(process.argv) ile aynı kural.
-    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--reject', '--reason', 'false-positive', '--findings', 'f1', '--note', 'yanlış alarm']);
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--run', 'r1', '--reject', '--reason', 'false-positive', '--findings', 'f1', '--note', 'yanlış alarm']);
     const d = store.query({ type: 'HumanDecision' });
     expect(d[0].payload).toMatchObject({ decision: 'reject', reason: 'false-positive' });
+    expect(d[0].run_id).toBe('r1'); // --run override: aynen kullanılır (auto-resolve atlanır)
+  });
+
+  // R25 (faz 5 T1): decide → GERÇEK run bağlantısı. Auto-resolve: --run yoksa store'daki SON
+  // eşleşen TaskPicked'in run_id'si; fail-closed: çözülemezse hata ('manual' sessiz yazımı YOK);
+  // '--run manual' tek explicit 'manual' yolu. L3 veri yolu (golden draft) böylece gerçek decide
+  // kararlarıyla kapanır — E2E kanıtı: tests/e2e/decisionPath.test.ts.
+  it('decide: runId otomatik çözülür (son TaskPicked)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r25-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const taskSpec = { id: 't1', description: 'sum ekle', acceptanceCriteria: ['sum(2,3)===5'], filesScope: [] };
+    await store.append('RunStarted', 'r1', '-', 'o', { configSnapshot: {} });
+    await store.append('TaskPicked', 'r1', 't1', 'orchestrator', { taskSpec });
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']);
+    const d = store.query({ type: 'HumanDecision' });
+    expect(d[0].run_id).toBe('r1');
+    // son TaskPicked: aynı taskSpec id'li YENİ bir koşum (r2) sonradan yazıldı → auto-resolve EN
+    // YENİ eşleşmeyi seçer (iki koşum r1 ve r2 — '.pop()' dosya sırasındaki son kayıt)
+    await store.append('RunStarted', 'r2', '-', 'o', { configSnapshot: {} });
+    await store.append('TaskPicked', 'r2', 't1', 'orchestrator', { taskSpec });
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']);
+    const d2 = store.query({ type: 'HumanDecision' });
+    expect(d2).toHaveLength(2);
+    expect(d2[1].run_id).toBe('r2');
+    expect(d2[1].payload).toMatchObject({ decision: 'accept', reason: 'real-issue-accepted' });
+  });
+  it('decide: --run override', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r25o-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await store.append('RunStarted', 'r1', '-', 'o', { configSnapshot: {} });
+    await store.append('TaskPicked', 'r1', 't1', 'orchestrator', { taskSpec: { id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] } });
+    // eşleşen TaskPicked VAR (auto-resolve 'r1' verirdi) — --run r9 AYNEN kullanılır
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--run', 'r9', '--reject', '--reason', 'fixed-later']);
+    const d = store.query({ type: 'HumanDecision' });
+    expect(d[0].run_id).toBe('r9');
+    expect(d[0].task_id).toBe('t1');
+  });
+  it('decide: eşleşen TaskPicked yok + --run yok → fail-closed hata', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r25f-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl')); // boş store
+    await expect(buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']))
+      .rejects.toThrow('koşum bulunamadı');
+    // fail-closed: sessiz 'manual' yazımı YOK — store'a HumanDecision YAZILMAZ
+    expect(store.query({ type: 'HumanDecision' })).toHaveLength(0);
+  });
+  it('decide: --run manual → run_id manual (explicit)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r25m-'));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--run', 'manual', '--reject', '--reason', 'stale-lesson']);
+    const d = store.query({ type: 'HumanDecision' });
+    expect(d[0].run_id).toBe('manual');
+    expect(d[0].payload).toMatchObject({ decision: 'reject', reason: 'stale-lesson' });
   });
   it('status: validateChain sonucunu içerir', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli2-'));
