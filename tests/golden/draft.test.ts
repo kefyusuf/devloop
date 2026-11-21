@@ -117,4 +117,35 @@ describe('golden draft', () => {
     expect(r.written).toBe(0);
     expect(existsSync(join(repo, '.devloop', 'golden-drafts', 'x.task.json'))).toBe(false);
   });
+
+  // R26d (faz 5 T5): goldenId seed'i canonicalJson üzerinden — AYNI taskSpec içeriği farklı
+  // key-sırasıyla geliyorsa AYNI goldenId (key-order duyarlılığı kapanır). Not: gerçek VerdictStore
+  // yolu event şema parse'ıyla (zod) taskSpec key-sırasını şekil-sırasına normalize ettiği için bu
+  // fark seed'e hiç ulaşmaz (test vacuous pass olurdu) — seed hattı HAM event'lerle (duck-typed
+  // store) vurulur; draft.ts'teki gerçek goldenId hesabı aynen koşar.
+  it('R26d: aynı taskSpec farklı key-sırasıyla → aynı goldenId (seed canonicalJson)', async () => {
+    const specA: Record<string, unknown> = { id: 't1', description: 'toplama ekle', acceptanceCriteria: ['sum(2,3)===5'], filesScope: [] };
+    const specB: Record<string, unknown> = { description: 'toplama ekle', filesScope: [], id: 't1', acceptanceCriteria: ['sum(2,3)===5'] };
+    const DIFF = '--- a/src/math.ts\n+++ b/src/math.ts\n@@ -1 +1,2 @@\n const x=1;\n+export const sum=(a:number,b:number)=>a+b;';
+    const mkRun = (runId: string, taskSpec: Record<string, unknown>) => ([
+      { type: 'TaskPicked', run_id: runId, task_id: 't1', payload: { taskSpec } },
+      { type: 'ArtifactProduced', run_id: runId, task_id: 't1', payload: { artifact: { diff: DIFF, intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' } },
+      { type: 'PRCreated', run_id: runId, task_id: 't1', payload: { url: 'https://pr/x', title: 't1', commitSha: null, diffDigest: 'd' } },
+      { type: 'HumanDecision', run_id: runId, task_id: 't1', payload: { decision: 'accept', reason: 'real-issue-accepted', parentFindingEventIds: [] } },
+    ]);
+    const fakeStore = (events: { type: string; run_id: string; task_id: string }[]) => ({
+      query: (f: { runId?: string; taskId?: string; type?: string }) =>
+        events.filter((e) =>
+          (f.type === undefined || e.type === f.type) &&
+          (f.runId === undefined || e.run_id === f.runId) &&
+          (f.taskId === undefined || e.task_id === f.taskId)),
+    }) as unknown as VerdictStore;
+    const dir = mkdtempSync(join(tmpdir(), 'gd-key-'));
+    const r = await generateGoldenDrafts({
+      store: fakeStore([...mkRun('r1', specA), ...mkRun('r2', specB)]),
+      repoPath: dir, draftsDir: join(dir, 'drafts'),
+    });
+    expect(r.drafts).toHaveLength(2);
+    expect(r.drafts[0].goldenId).toBe(r.drafts[1].goldenId); // key-sırası farkı id'yi değiştirmez
+  });
 });

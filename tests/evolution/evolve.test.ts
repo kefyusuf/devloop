@@ -481,4 +481,25 @@ describe('generateLlmMutations (R19)', () => {
     expect(parsed.llmMutations).toBeUndefined();
     expect(Array.isArray(parsed.candidates)).toBe(true);
   });
+
+  // R26d (faz 5 T5): evoId seed'i canonicalJson üzerinden — AYNI içerik farklı key-sırasıyla
+  // geliyorsa AYNI evoId (key-order duyarlılığı kapanır). Mock gateway zod parse yapmaz → mock'un
+  // content key sırası seed'e AYNEN ulaşır; JSON.stringify seed'inde iki çağrı farklı evoId üretirdi.
+  it('R26d: aynı içerik farklı key-sıralı LLM mutasyon content\'i → aynı evoId', async () => {
+    const mkGw = (content: Record<string, unknown>): LlmGateway => ({
+      complete: vi.fn(async () => ({
+        data: { mutations: [{ kind: 'playbook-reviewer', title: 'kanıt eşiği yükselt', content, rationale: 'tekrarlayan fp' }] },
+        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 },
+      })),
+    } as unknown as LlmGateway);
+    const dir = mkdtempSync(join(tmpdir(), 'evo-llm7-'));
+    const ctx = makeCtx(dir);
+    const baseline = baseSummary({ evalId: 'b-key' });
+    const shadowEval = baseSummary({ evalId: 's-key' });
+    const a = await generateLlmMutations({ ctx, gateway: mkGw({ note: 'eşik yükselt', category: 'perf' }), baseline, shadowEval });
+    const b = await generateLlmMutations({ ctx, gateway: mkGw({ category: 'perf', note: 'eşik yükselt' }), baseline, shadowEval });
+    expect(a).toHaveLength(1);
+    expect(b).toHaveLength(1);
+    expect(a[0].evoId).toBe(b[0].evoId);
+  });
 });

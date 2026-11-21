@@ -11,6 +11,7 @@ import type { EvalSummary } from '../eval/evalRunner.js';
 import type { DevloopEvent } from '../contracts/events.js';
 import type { LlmGateway } from '../gateway/gateway.js';
 import { GENERATOR_PLAYBOOK_YOK, REVIEWER_PLAYBOOK_YOK } from '../shell/sentinels.js'; // R26a: sentineller tek kaynakta
+import { canonicalJson } from '../util/canonicalJson.js'; // R26d: hash seed key-order duyarlılığı kapanır
 
 export interface EvolutionCandidate {
   evoId: string;
@@ -174,12 +175,13 @@ export async function generateLlmMutations(args: {
     'KURAL: Kanıt gerileme veya tekrarlayan sinyal göstermiyorsa mutasyon üretme; her mutasyonun rationale alanı kanıta dayansın.',
   ].join('\n\n');
   const { data } = await gateway.complete({ system, user, schema: LlmMutationsOutput, runId: shadowEval.evalId });
-  // evoId deterministik: sha256(kind:title:JSON(content)+sourceEvalId).slice(16) — sourceEvalId
-  // baseline evalId (koşumdan koşuma değişen shadowEval.evalId girdiye karışmaz, aksi halde aynı
-  // taslak her shadow koşumunda farklı dosya adı alırdı).
+  // evoId deterministik: sha256(kind:title:canonicalJson(content)+sourceEvalId).slice(16) —
+  // sourceEvalId baseline evalId (koşumdan koşuma değişen shadowEval.evalId girdiye karışmaz, aksi
+  // halde aynı taslak her shadow koşumunda farklı dosya adı alırdı). R26d: content seed'i
+  // canonicalJson üzerinden — aynı içerik farklı key-sırasıyla gelse de aynı evoId.
   const id = (seed: string) => createHash('sha256').update(seed).digest('hex').slice(0, 16);
   const drafts: LlmMutationDraft[] = data.mutations.map((m) => ({
-    evoId: id(`${m.kind}:${m.title}:${JSON.stringify(m.content)}+${baseline.evalId}`),
+    evoId: id(`${m.kind}:${m.title}:${canonicalJson(m.content)}+${baseline.evalId}`),
     kind: m.kind,
     title: m.title,
     content: m.content,
