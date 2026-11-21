@@ -29,12 +29,14 @@ const { gatewayCompleteSpy } = vi.hoisted(() => ({
 }));
 vi.mock('../../src/gateway/factory.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/gateway/factory.js')>();
-  // R21 (faz 4 T6): CLI createGateways + ChainedGateway kullanır — mock createGateways'i de
-  // override eder (tek ayak = spy gateway; CLI length===1 düz gateway seçer → davranış aynen).
+  // R21 (faz 4 T6) + R26b (faz 5 T3): CLI gateway kurulumunu createGatewayOrChain üzerinden
+  // yapar (helper createGateways çağırır; vi.mock modül-içi çağrıyı yakalayamadığından helper
+  // AYRICA override edilir) — tek ayak = spy gateway döner, CLI seçim davranışı aynen kanılanır.
   return {
     ...actual,
     createGateway: () => ({ complete: gatewayCompleteSpy }),
     createGateways: () => [{ complete: gatewayCompleteSpy }],
+    createGatewayOrChain: () => ({ complete: gatewayCompleteSpy }),
   };
 });
 

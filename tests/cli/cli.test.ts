@@ -212,16 +212,24 @@ describe('CLI', () => {
       const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category: 'off-by-one', severity: 'required', confidence: 0.9, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
       await store.append('HumanDecision', run, `t${i}`, 'h', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [f.event_id] });
     }
-    // Shadow pipeline ensemble içerir (run komutu assembly'si) — API anahtarı yokken reviewer
-    // stage'leri fail-fast GatewayError verir (ağ yok); advisory olduğundan eval yine pass olur.
+    // Shadow pipeline ensemble içerir (run komutu assembly'si) — reviewer stage'leri fail-fast
+    // GatewayError verir; advisory olduğundan eval yine pass olur.
+    // R26b hüküm: createGatewayOrChain 0-ayakta KURULUM anında GatewayError fırlatır (fail-closed)
+    // — eski 'anahtar sil → boş zincir complete'te düşer' donanımı artık shadow kurulumunu
+    // başlatamazdı. Senaryo KORUNUR: sahte anahtar → 1 ayak kurulur; fetch stub HTTP 401 →
+    // reviewer yine fail-fast GatewayError (gerçek ağ/backoff YOK — HTTP hatası retry'sız
+    // bir sonraki modele geçer ve bekleme yapmaz). Assertion hedefleri AYNEN.
     const prevKey = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'k-dummy';
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('unauthorized', { status: 401 });
     const out: string[] = [];
     const origLog = console.log; console.log = (m: string) => out.push(m);
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'evolve', '--shadow']);
     } finally {
       console.log = origLog;
+      globalThis.fetch = prevFetch;
       if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
     }
     const parsed = JSON.parse(out.join('\n'));

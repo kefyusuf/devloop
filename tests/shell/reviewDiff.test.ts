@@ -308,12 +308,22 @@ llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costP
   it('exit 0: gates pass + bulgu yok → process.exitCode "0"', async () => {
     // hüküm (R11): LOW-risk fixture (docs yolu — testDiff 0, scopePaths 0, 5 satır → risk 0 < eşik 20)
     // → gatePipeline koşar; fullPipeline/ensemble'a hiç girilmez (API anahtarı gerekmez).
+    // R26b hüküm: gateway kurulumu 0-ayakta fail-closed → sahte anahtar ile 1 ayak kurulur
+    // (fetch stub 401: ensemble girilse bile fail-fast GatewayError; gerçek ağ/backoff YOK).
     const dir = tmpRepo(['risk-triage'], ['--- a/docs/notes.md', '+++ b/docs/notes.md', '@@ -1 +1,2 @@', ' satır', '+yeni satır'].join('\n'));
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'k-dummy';
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('unauthorized', { status: 401 });
     const prev = process.exitCode;
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'review-diff', '--diff', join(dir, 'pr.diff'), '--task', 't1']);
       expect(Number(process.exitCode)).toBe(0); // vitest worker exitCode'u number'a çevirir — üretimde String('0') kalır
-    } finally { process.exitCode = prev; }
+    } finally {
+      process.exitCode = prev;
+      globalThis.fetch = prevFetch;
+      if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
+    }
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     expect(store.query({ runId: 'ci-t1', type: 'StageVerdict' })[0].payload.status).toBe('pass'); // bağımsız triaj verdict'i ilk sırada
     const verdictStages = store.query({ runId: 'ci-t1', type: 'StageVerdict' }).map((e) => e.payload.stage);
@@ -323,12 +333,22 @@ llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costP
   });
 
   it('exit 1: sır içeren diff → secret-scan gate fail → process.exitCode "1"', async () => {
+    // R26b hüküm: gateway kurulumu 0-ayakta fail-closed → sahte anahtar ile 1 ayak kurulur
+    // (fetch stub 401: ensemble girilse bile fail-fast; secret-scan gate zaten exit 1 verir).
     const dir = tmpRepo(['risk-triage', 'secret-scan'], DIFF + "\n+const K = 'AKIAIOSFODNN7EXAMPLE';\n");
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'k-dummy';
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('unauthorized', { status: 401 });
     const prev = process.exitCode;
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'review-diff', '--diff', join(dir, 'pr.diff'), '--task', 't1']);
       expect(Number(process.exitCode)).toBe(1);
-    } finally { process.exitCode = prev; }
+    } finally {
+      process.exitCode = prev;
+      globalThis.fetch = prevFetch;
+      if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
+    }
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     const secretVerdict = store.query({ runId: 'ci-t1', type: 'StageVerdict' }).find((e) => e.payload.stage === 'secret-scan');
     expect(secretVerdict?.payload.status).toBe('fail');
@@ -336,17 +356,22 @@ llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costP
 
   // hüküm (R11): eski exit-2 testi artık FULL yolu koşturur (test dosyası → risk 50 ≥ eşik 20 →
   // fullPipeline + ensemble). Assertion'lar korunur; assembly adaptasyonu: ensemble fail-fast
-  // GatewayError verir (advisory — gate düşürmez) diye API anahtarı koşum süresince silinir.
+  // GatewayError verir (advisory — gate düşürmez) diye koşum süresince sahte anahtar + fetch stub
+  // kullanılır (R26b hüküm: 0-ayak kurulum fail-closed olduğundan anahtar SİLME artık kullanılamaz —
+  // sahte anahtar → 1 ayak; HTTP 401 → reviewer retry'sız ve bekleme yapmadan fail-fast).
   it('exit 2: test dosyası ekleyen diff → risk-triage required bulgu → process.exitCode "2"', async () => {
     const dir = tmpRepo(['risk-triage'], ['--- a/tests/x.test.ts', '+++ b/tests/x.test.ts', '@@ -1 +1,2 @@', ' const a=1;', '+const b=2;'].join('\n'));
     const prevKey = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'k-dummy';
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('unauthorized', { status: 401 });
     const prev = process.exitCode;
     try {
       await buildCli(dir).parseAsync(['node', 'devloop', 'review-diff', '--diff', join(dir, 'pr.diff'), '--task', 't1']);
       expect(Number(process.exitCode)).toBe(2);
     } finally {
       process.exitCode = prev;
+      globalThis.fetch = prevFetch;
       if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
     }
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
