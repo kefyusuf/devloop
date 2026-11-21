@@ -17,6 +17,7 @@ import { TaskSpecSchema, type TaskSpec, type Artifact, type Finding } from '../c
 import type { PrReporter } from '../shell/pr.js';
 import { safeEnv } from '../shell/safeEnv.js';
 import { dockerAvailable } from '../shell/sandbox.js';
+import { canonicalJson } from '../util/canonicalJson.js'; // R31: policyHash seed key-order duyarlılığı kapanır
 import type { z } from 'zod';
 
 const runGit = promisify(execFile);
@@ -98,7 +99,10 @@ export class Orchestrator {
     const prevRuns = store.query({ type: 'RunStarted' });
     const lastRun = prevRuns.length > 0 ? prevRuns[prevRuns.length - 1] : null;
     const runId = lastRun ? lastRun.run_id : randomUUID();
-    const policyHash = createHash('sha256').update(JSON.stringify(policy)).digest('hex').slice(0, 16);
+    // hüküm: R31 policyHash canonicalJson seed — hash DEĞERLERİ değişimi bilinçli (policy
+    // çok-anahtarlı); resume-mismatch karşılaştırması iki tarafı da AYNI algoritmayla yeniden
+    // hesapladığından tutarlı kalır (key-order determinizmi kazanılır).
+    const policyHash = createHash('sha256').update(canonicalJson(policy)).digest('hex').slice(0, 16);
     const summary: RunSummary = { runId, prs: [], blocked: [] };
     if (lastRun) {
       // Minor (fix round 1): resume'da politika kayması sessiz karışım değil — panic ile dur.

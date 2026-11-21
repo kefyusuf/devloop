@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { acceptedRuns, generateGoldenDrafts, acceptDraft, discardDraft } from '../../src/golden/draft.js';
+import { acceptedRuns, generateGoldenDrafts, acceptDraft, discardDraft, readGoldenDraftFiles } from '../../src/golden/draft.js';
 import { VerdictStore, validateChain } from '../../src/store/store.js';
 import { loadGoldenTasks } from '../../src/eval/golden.js';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -147,5 +147,18 @@ describe('golden draft', () => {
     });
     expect(r.drafts).toHaveLength(2);
     expect(r.drafts[0].goldenId).toBe(r.drafts[1].goldenId); // key-sırası farkı id'yi değiştirmez
+  });
+
+  // R31 (faz 6 T1, T7 minor): golden-drafts okuma TEK KAPI — cli 'status' sayacı ile 'golden list'
+  // AYNI helper'ı kullanır (inline *.task.json filtresi duplicate'ti). Dizin yoksa [] (fail-soft).
+  it('R31: readGoldenDraftFiles — *.task.json adları, dizin yoksa []', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'gd-r31-'));
+    mkdirSync(join(repo, '.devloop', 'golden-drafts'), { recursive: true });
+    writeFileSync(join(repo, '.devloop', 'golden-drafts', 'a.task.json'), '{}');
+    writeFileSync(join(repo, '.devloop', 'golden-drafts', 'b.task.json'), '{}');
+    writeFileSync(join(repo, '.devloop', 'golden-drafts', 'notlar.txt'), 'x'); // .task.json değil — filtrelenir
+    expect(readGoldenDraftFiles(repo)).toEqual(['a.task.json', 'b.task.json']);
+    // golden-drafts/ dizini hiç yokken []
+    expect(readGoldenDraftFiles(mkdtempSync(join(tmpdir(), 'gd-r31n-')))).toEqual([]);
   });
 });

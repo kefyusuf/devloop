@@ -7,6 +7,7 @@ import { findingKey, severityRank } from '../pipeline/findingUtils.js';
 import type { VerdictStore } from '../store/store.js';
 import type { Policy } from '../config/config.js';
 import { computeGateConfigHash } from '../orchestrator/orchestrator.js';
+import { canonicalJson } from '../util/canonicalJson.js'; // R31: policyHash seed key-order duyarlılığı kapanır
 
 /**
  * R6 (faz 2 T8): CI trigger mode — review-diff. Unified diff'ten dosya başına EKLENEN satırları
@@ -44,7 +45,10 @@ export function parseDiff(diff: string): Array<{ path: string; addedContent: str
   // R22 (faz 4 T3): header regex'leri trailing whitespace toleranslı (`[ \t]*$`) — malformed
   // diff'lerdeki `--- a/x.ts ` / `+++ b/x.ts ` satırları başlık sayılır; yol duyarlılığı korunur
   // (trailing boşluk yola sızmaz). CRLF zaten satır bazında `\r` strip'iyle işlenir.
-  const reDel = /^--- (?:a\/(.+?)[ \t]*|\/dev\/null)$/; // başlık adayı (yalnız onay çiftiyle kapsam açar)
+  const reDel = /^--- (?:a\/(.+?)[ \t]*|\/dev\/null[ \t]*)$/; // başlık adayı (yalnız onay çiftiyle kapsam açar)
+  // R31 (faz 6 T1): `/dev/null` dalı da trailing-ws toleranslı — reDevNull (R26e, faz 5 T6) ile
+  // simetri. Önceki regex ws'li `--- /dev/null ` satırını header adayı SAYMIYOR, hunk içinde
+  // ardından gelen `+++ b/new.ts` İÇERİK sanılıp `++ b/new.ts` olarak önceki dosyaya akıyordu.
   const reAdd = /^\+\+\+ b\/(.+?)[ \t]*$/;              // onay satırı
   // R26e (faz 5 T6): reDevNull da R22 ailesine katıldı — `+++ /dev/null ` (trailing ws) başlık
   // sayılmıyordu; hunk içindeki ws'li satır İÇERİK sanılıp `++ /dev/null` olarak önceki dosyaya akıyordu.
@@ -119,7 +123,9 @@ export async function runReviewDiff(args: {
   // etkin stage kümesi (chosen.stageNames()); low-risk koşumda llm-ensemble YOK, high-risk'te VAR.
   // Koşumun ilk store event'i olma özelliği korunur (RunStarted → TaskPicked → …).
   if (args.store.query({ runId, type: 'RunStarted' }).length === 0) {
-    const policyHash = createHash('sha256').update(JSON.stringify(args.policy)).digest('hex').slice(0, 16);
+    // hüküm: R31 policyHash canonicalJson seed — hash DEĞERLERİ değişimi bilinçli (policy
+    // çok-anahtarlı); key-order determinizmi kazanılır.
+    const policyHash = createHash('sha256').update(canonicalJson(args.policy)).digest('hex').slice(0, 16);
     await args.store.append('RunStarted', runId, args.taskSpecId, 'ci', {
       configSnapshot: {
         policyHash,

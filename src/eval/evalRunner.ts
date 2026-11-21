@@ -7,6 +7,7 @@ import type { Finding } from '../contracts/schemas.js';
 import type { GoldenTask } from './golden.js';
 import { loadGoldenTasks } from './golden.js';
 import { parseDiff } from '../shell/reviewDiff.js';
+import { canonicalJson } from '../util/canonicalJson.js'; // R31: policyHash seed key-order duyarlılığı kapanır
 
 export interface EvalSummary {
   evalId: string; goldenCount: number; passed: number; failed: number; score: number;
@@ -44,7 +45,9 @@ export async function runEval(args: {
   // karışır, evalId (ve runId) her koşumda benzersiz.
   const evalId = createHash('sha256').update(args.repoPath + tasks.length + invalid.join() + randomUUID()).digest('hex').slice(0, 12) + '-' + Date.now();
   const runId = `eval-${evalId}`;
-  const configSnapshot = { ...(args.candidate ? { candidate: args.candidate.label } : { mode: 'production' }), policyHash: createHash('sha256').update(JSON.stringify(args.policy)).digest('hex').slice(0, 16) };
+  // hüküm: R31 policyHash canonicalJson seed — hash DEĞERLERİ değişimi bilinçli (policy
+  // çok-anahtarlı); key-order determinizmi kazanılır.
+  const configSnapshot = { ...(args.candidate ? { candidate: args.candidate.label } : { mode: 'production' }), policyHash: createHash('sha256').update(canonicalJson(args.policy)).digest('hex').slice(0, 16) };
 
   const perTask: EvalSummary['perTask'] = [];
   for (const t of tasks) {

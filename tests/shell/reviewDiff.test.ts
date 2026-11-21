@@ -79,6 +79,29 @@ describe('parseDiff', () => {
     expect(parseDiff(d)).toEqual([{ path: 'new.ts', addedContent: 'hello();' }]);
   });
 
+  // R31 (faz 6 T1): reDel, reDevNull (faz 5 T6 / R22 ailesi) ile SIMETRIK — trailing-ws'li
+  // `--- /dev/null ` satırı header adayı. Hüküm: brief'in literal girdisi baştan TEKRAR koşumda
+  // da doğru sonucu veriyordu (EXPECT_FILE_HEADER'daki çiftsiz `+++ b/` tolerans açılışı dosyayı
+  // yine açar — ön-davranış doğrulandı, pin olarak korunur); asıl R26e-sınıfı bozulma hunk
+  // İÇİNDEYDİ: ws'li del header ihmal edilip `+++ b/new.ts` İÇERİK sanılıyordu (aşağıdaki test).
+  it('R31: trailing-ws `--- /dev/null ` silme header adayıdır (reDevNull ile simetrik)', () => {
+    const r = parseDiff('--- /dev/null \n+++ b/new.ts\n+const a=1;\n');
+    expect(r).toEqual([{ path: 'new.ts', addedContent: 'const a=1;' }]);
+  });
+  it('R31: hunk içi trailing-ws `--- /dev/null ` yeni dosya açar — `+++ b/new.ts` içerik olarak önceki dosyaya akmaz', () => {
+    const d = [
+      '--- a/x.ts', '+++ b/x.ts', '@@ -1 +1,2 @@',
+      '+const a=1;',
+      '--- /dev/null ',
+      '+++ b/new.ts',
+      '+const b=2;',
+    ].join('\n');
+    expect(parseDiff(d)).toEqual([
+      { path: 'x.ts', addedContent: 'const a=1;' },
+      { path: 'new.ts', addedContent: 'const b=2;' },
+    ]);
+  });
+
   // R14 (faz 3 T8) hüküm: parseDiff durum makinesi — hunk içi tırnaklanmış diff başlığı
   // (örn. PR'ın eklediği .patch dosyası gövdesi) kapsam KAPATMAZ/DEĞİŞTİRMEZ. Sözleşme testi:
   // içerik satırı tam olarak `--- a/fake.ts` → sonraki `+` satırları HÂLÂ ilk dosyaya gider.

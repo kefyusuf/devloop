@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { join, resolve } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { loadConfig, type Policy } from '../config/config.js';
 import { VerdictStore, validateChain } from '../store/store.js';
 import { createGatewayOrChain, altModelFor } from '../gateway/factory.js';
@@ -13,7 +13,7 @@ import {
 } from '../evolution/evolve.js';
 import { runEval, type EvalSummary } from '../eval/evalRunner.js';
 import { loadGoldenTasks } from '../eval/golden.js';
-import { generateGoldenDrafts, acceptDraft, discardDraft } from '../golden/draft.js';
+import { generateGoldenDrafts, acceptDraft, discardDraft, readGoldenDraftFiles } from '../golden/draft.js';
 import { Orchestrator, BudgetedGateway } from '../orchestrator/orchestrator.js';
 import { PrReporter } from './pr.js';
 import { runReviewDiff } from './reviewDiff.js';
@@ -154,8 +154,8 @@ export function buildCli(workDir = process.cwd()): Command {
     // hariç); konsol kuralı: alan daima yazılır, eval koşumu yoksa literal 'null'.
     const { policy } = loadConfig(repoDir());
     const goldenCount = loadGoldenTasks(repoDir()).tasks.length;
-    const draftsDir = join(repoDir(), '.devloop', 'golden-drafts');
-    const goldenDrafts = existsSync(draftsDir) ? readdirSync(draftsDir).filter((n) => n.endsWith('.task.json')).length : 0;
+    // R31 (faz 6 T1, T7 minor): golden-drafts okuma tek kapı — golden list ile AYNI helper (davranış aynen).
+    const goldenDrafts = readGoldenDraftFiles(repoDir()).length;
     const lastEvalScore = lastEvalRun(s, 'production')?.payload.score ?? null;
     const l3Active = goldenCount >= policy.l3MinGoldenTasks;
     console.log(`runs=${s.query({ type: 'RunStarted' }).length} prs=${s.query({ type: 'PRCreated' }).length} blocked=${s.query({ type: 'TaskBlocked' }).length} decisions=${s.query({ type: 'HumanDecision' }).length} lessons=${s.query({ type: 'LessonLearned' }).length} chain=${chain.ok ? 'ok' : 'BROKEN: ' + chain.errors.join('; ')} goldenCount=${goldenCount} goldenDrafts=${goldenDrafts} l3Active=${l3Active} lastEvalScore=${lastEvalScore}`);
@@ -447,8 +447,8 @@ export function buildCli(workDir = process.cwd()): Command {
     console.log(JSON.stringify(r, null, 2));
   });
   goldenCmd.command('list').action(async () => {
-    const d = join(repoDir(), '.devloop', 'golden-drafts');
-    const names = existsSync(d) ? readdirSync(d).filter((n) => n.endsWith('.task.json')) : [];
+    // R31 (faz 6 T1, T7 minor): status sayacıyla AYNI helper — readGoldenDraftFiles (davranış aynen).
+    const names = readGoldenDraftFiles(repoDir());
     console.log(names.join('\n') || '(taslak yok)');
   });
   goldenCmd.command('accept').argument('<draftId>').action(async (id: string) => {
