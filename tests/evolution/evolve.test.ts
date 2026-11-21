@@ -532,4 +532,33 @@ describe('generateLlmMutations (R19)', () => {
     expect(b).toHaveLength(1);
     expect(a[0].evoId).toBe(b[0].evoId);
   });
+
+  // R31 (faz 6 T1): prompt-ctx de signalExcluded'dan geçer — eval- prefix'li koşum bulguları LLM
+  // mutasyon prompt satırlarına sızmaz (R26g'nin kapsam dışı bıraktığı nokta; R26g testinin
+  // kardeşi). Kategori adı prompt'a ret kararı üzerinden taşındığından eval- koşumunun bulgusu +
+  // false-positive ret'i birlikte seed'lenir (EvalRun event'i BİLE yok — dışlama yalnız run_id
+  // prefix'iyle çalışmalı, R26g production-eval semantiği). Mock gateway şema parse yapmaz →
+  // ham prompt yakalanır (mevcut mock-gateway konvansiyonu).
+  it("R31: eval- prefix'li koşum bulgusu LLM mutasyon prompt bağlamına girmez", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evo-llm8-'));
+    const ctx = makeCtx(dir);
+    const seedReject = async (run: string, taskId: string, category: string) => {
+      const art = await ctx.store.append('ArtifactProduced', run, taskId, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      const f = await ctx.store.append('FindingEmitted', run, taskId, 'llm-reviewer', { finding: { id: `f-${taskId}`, stage: 'llm-reviewer', category, severity: 'required', confidence: 0.9, corroborated: false, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+      await ctx.store.append('HumanDecision', run, taskId, 'human', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [f.event_id] });
+    };
+    await seedReject('eval-prod-1', 'te1', 'eval-only'); // eval- prefix — production eval koşumu
+    await seedReject('ci-1', 'tc1', 'ci-only');          // üretim koşumu
+    let capturedUser = '';
+    const gw = {
+      complete: vi.fn(async (req: { system: string; user: string }) => {
+        capturedUser = req.user;
+        return { data: { mutations: [] }, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
+      }),
+    } as unknown as LlmGateway;
+    await generateLlmMutations({ ctx, gateway: gw, baseline: baseSummary({ evalId: 'b-r31' }), shadowEval: baseSummary({ evalId: 's-r31' }) });
+    expect(capturedUser).toContain('ci-only');      // üretim sinyali prompt'ta KALIR
+    expect(capturedUser).not.toContain('eval-only'); // eval- koşumu prompt'a SIZMAZ
+  });
 });

@@ -7,6 +7,7 @@ import type { Finding } from '../contracts/schemas.js';
 import type { GoldenTask } from './golden.js';
 import { loadGoldenTasks } from './golden.js';
 import { parseDiff } from '../shell/reviewDiff.js';
+import { canonicalJson } from '../util/canonicalJson.js'; // R31: policyHash seed key-order duyarlılığı kapanır
 
 export interface EvalSummary {
   evalId: string; goldenCount: number; passed: number; failed: number; score: number;
@@ -37,6 +38,9 @@ export function scoreEval(
 export async function runEval(args: {
   repoPath: string; pipeline: ReviewPipeline; policy: Policy; store: VerdictStore;
   candidate?: { label: string }; l3MinGoldenTasks: number;
+  // R30 (faz 6 T2): multi-repo eval — hedef repo yolu EvalRun payload KÖKÜNE yazılır
+  // (aggregate perRepo alanı payload.repo'dan okunur); tek-repo koşumda verilmez → alan yazılmaz.
+  repo?: string;
 }): Promise<EvalSummary> {
   const { tasks, invalid } = loadGoldenTasks(args.repoPath);
   // R22 (faz 4 T3): seed'e randomUUID — aynı repo + aynı golden setten arka arkaya iki koşum
@@ -44,7 +48,9 @@ export async function runEval(args: {
   // karışır, evalId (ve runId) her koşumda benzersiz.
   const evalId = createHash('sha256').update(args.repoPath + tasks.length + invalid.join() + randomUUID()).digest('hex').slice(0, 12) + '-' + Date.now();
   const runId = `eval-${evalId}`;
-  const configSnapshot = { ...(args.candidate ? { candidate: args.candidate.label } : { mode: 'production' }), policyHash: createHash('sha256').update(JSON.stringify(args.policy)).digest('hex').slice(0, 16) };
+  // hüküm: R31 policyHash canonicalJson seed — hash DEĞERLERİ değişimi bilinçli (policy
+  // çok-anahtarlı); key-order determinizmi kazanılır.
+  const configSnapshot = { ...(args.candidate ? { candidate: args.candidate.label } : { mode: 'production' }), policyHash: createHash('sha256').update(canonicalJson(args.policy)).digest('hex').slice(0, 16) };
 
   const perTask: EvalSummary['perTask'] = [];
   for (const t of tasks) {
@@ -75,6 +81,7 @@ export async function runEval(args: {
   await args.store.append('EvalRun', runId, '-', 'eval', {
     evalId: summary.evalId, goldenCount: summary.goldenCount, passed, failed, score, invalid,
     perTask: summary.perTask, configSnapshot, ...(comparedTo ? { comparedTo } : {}),
+    ...(args.repo ? { repo: args.repo } : {}), // R30 (faz 6 T2): multi-repo hedef repo — payload kökü
   });
   return summary;
 }

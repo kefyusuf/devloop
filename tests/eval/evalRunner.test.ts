@@ -3,6 +3,7 @@ import { runEval, scoreEval } from '../../src/eval/evalRunner.js';
 import { VerdictStore } from '../../src/store/store.js';
 import { validateChain } from '../../src/store/store.js';
 import { loadConfig } from '../../src/config/config.js';
+import type { Policy } from '../../src/config/config.js';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -127,5 +128,43 @@ describe('runEval', () => {
     // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
     const ids = queryTyped(store, { type: 'EvalRun' }).map((e) => e.payload.evalId);
     expect(new Set(ids).size).toBe(2); // kanıtta da çarpışma yok
+  });
+
+  // R31 (faz 6 T1): policyHash seed'i canonicalJson — key-order determinizmi. Aynı alanlar farklı
+  // key-sırasıyla kurulmuş iki policy → AYNI hash. Bilinen davranış değişikliği (hüküm): hash
+  // DEĞERLERİ değişir (policy çok-anahtarlı); resume-mismatch karşılaştırması iki tarafı da aynı
+  // algoritmayla hesapladığından tutarlı kalır.
+  it('R31: policyHash key-order duyarlı DEĞİL (canonicalJson seed)', async () => {
+    const dir = makeRepo([GOLDEN]);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const policyA: Policy = { ...policy, gates: ['risk-triage'], advisory: [] };
+    // aynı alanlar, farklı key-sırası: entries ters çevrilerek yeniden kurulur (değerler birebir)
+    const policyB = Object.fromEntries(Object.entries(policyA).reverse()) as Policy;
+    // önkoşul: JSON.stringify seed'i sıra farkını gerçekten yansıtır (test boşa koşmuyor)
+    expect(JSON.stringify(policyA)).not.toBe(JSON.stringify(policyB));
+    const common = { repoPath: dir, pipeline: passPipeline(), store, l3MinGoldenTasks: policy.l3MinGoldenTasks };
+    const r1 = await runEval({ ...common, policy: policyA });
+    const r2 = await runEval({ ...common, policy: policyB });
+    expect(r1.configSnapshot.policyHash).toBe(r2.configSnapshot.policyHash);
+  });
+
+  // R30 (faz 6 T2): multi-repo eval — runEval repo parametresi EvalRun payload KÖKÜNE yazılır
+  // (configSnapshot'a DEĞİL — aggregate perRepo alanı payload.repo'dan okunur). Tek-repo koşumda
+  // alan TANIMSIZ kalır (geriye-uyumlu — mevcut koşumlar ve eski store satırları alanı taşımaz).
+  it('R30: runEval repo parametresi EvalRun payload köküne yazılır', async () => {
+    const dir = makeRepo([GOLDEN]);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks, repo: 'fixture-a' });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const evs = queryTyped(store, { type: 'EvalRun' });
+    expect(evs).toHaveLength(1);
+    expect(evs[0].payload.repo).toBe('fixture-a');
+  });
+  it('R30: repo verilmeyen koşumda payload.repo undefined (geriye-uyumlu regrezyon pini)', async () => {
+    const dir = makeRepo([GOLDEN]);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    expect(queryTyped(store, { type: 'EvalRun' })[0].payload.repo).toBeUndefined();
   });
 });

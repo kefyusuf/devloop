@@ -391,4 +391,82 @@ kapsamındadır — mevcut test tip hataları faz 5'te düzeltildi.
 | ✅ (e) tsconfig strict | `npm run typecheck:tests` (`npx tsc -p tsconfig.test.json`) — vitest içinden spawn pahalı/fragman olduğundan build-level komut olarak kanılanır |
 | ✅ (f) sentinels drift pin'leri | `tests/shell/sentinels.test.ts` — üç sentinelin değer pin'i + sabit-üzerinden tüketici drift testleri |
 
+## Faz 6
+
+### Multi-repo eval (R30)
+
+`devloop eval --repos <p1,p2,...>`: virgülle ayrık hedef repo yolları üzerinde golden set
+agregasyonu. `--repos` verilmemişse tek-repo davranış **sıfır değişiklik** (ayrık kod yolu —
+mevcut akış byte-identical korunur).
+
+```bash
+devloop eval --repos ../repoA,../repoB
+```
+
+Çıktı: `perRepo[]` (her repo için tam EvalSummary + `repo`) + `aggregate` — toplamlar ve
+**weightedScore** = Σ(scoreᵢ·nᵢ)/Σnᵢ (n=goldenCount; 0 task'lı repo ağırlığa katılmaz ama
+perRepo'da açıkça raporlanır — sessiz hariç tutum yok; 1 ondalık yuvarlama):
+
+```json
+{
+  "perRepo": [
+    { "repo": "../repoA", "evalId": "…", "goldenCount": 2, "passed": 2, "failed": 0, "score": 100, "invalid": [], "l3Active": false, "…": "…" },
+    { "repo": "../repoB", "goldenCount": 1, "passed": 1, "failed": 0, "score": 100, "…": "…" }
+  ],
+  "aggregate": { "totalTasks": 3, "totalPassed": 3, "totalFailed": 0, "weightedScore": 100, "mergedInvalid": [] }
+}
+```
+
+- **Salt-okunur hedef ilkesi:** hedef repo'ların `.devloop/events.jsonl`'ine **hiçbir yazım
+  yoktur**; kanıt orchestrator (çalışma dizini) store'unda toplanır — hedef repo başına bir
+  `EvalRun` event'i, payload köküne additive optional **`repo`** alanıyla (tek-repo koşumda
+  tanımsız; geriye-uyumlu). `runId` kuralı aynı (`eval-<evalId>`) — eval- sinyal filtresiyle
+  otomatik uyumlu.
+- **Fail-closed girişler:** var olmayan hedef yol → hata; hiçbir hedef repoda golden task yok →
+  hata (boş koşum anlamsız — sessiz skor-0 raporu değil). Preflight TÜM yolları doğruladıktan
+  sonra koşum başlar; hata yolu üzerinde kanıt yazımı olmaz.
+- **Donmuş yargıcı (I2 hükmü aynen):** reviewerLessons orchestrator kompozisyonundan gelir —
+  her repo aynı yargıçla ölçülür; hedef repo'nun kendi lessons/playbook'ları karışmaz.
+- **L3 kapısı değişmedi:** `l3Active` per-repo kendi golden seti eşiğiyle (`l3MinGoldenTasks`)
+  hesaplanır; aggregate'te `l3Active` alanı **yok** — birleşik goldenCount evolve eşiğini açmaz
+  (ayrı, ölçülmüş karar: R34, faz 7+).
+
+### Hijyen batch (R31)
+
+- **reDel ws simetrisi:** `--- /dev/null ` (trailing-ws'li silme başlığı) artık header adayı —
+  reDevNull (faz 5 T6) ile aynı `[ \t]*$` toleransı.
+- **Prompt-bağlam filtresi:** LLM mutasyon prompt bağlamı da `signalExcludedFor` tek predicate'inden
+  geçer — `eval-` prefix'li koşum bulguları ve kararları artık candidate sayımına da prompt
+  satırlarına da sızmaz (R26g'nin kapsam dışı bıraktığı nokta).
+- **policyHash → canonicalJson:** orchestrator/evalRunner/reviewDiff'teki üç policyHash seed'i
+  `canonicalJson(policy)` üzerinden — hash key-order'dan bağımsız. **Bilinçli kabul (değer
+  değişimi ifşalı):** policy çok-anahtarlı olduğundan hash DEĞERLERİ değişti; R31 öncesi persist
+  edilmiş orchestrator store'ları ilk yeni orchestrator koşumunda resume-panic yapar (hash-pinli
+  koruma beklediği gibi çalışır) — mevcut koşumlar tamamlanmadan güncelleme yapmayın.
+- **goldenDrafts tek kapı:** `readGoldenDraftFiles` shared helper — `status` sayacı ile
+  `golden list` filtresi aynı okuma kapısını kullanır.
+
+### Canlı doğrulama ortam denetimi (R32) — SONUÇ
+
+Yeni kod yok; ortam denetimi faz kapanışında raporlandı:
+
+- **5d Docker:** daemon VAR (server 29.9.3) → `DEVLOOP_DOCKER=1 npx vitest run
+  tests/shell/sandbox.test.ts` → **11/11 PASS** — gerçek Stryker/tsc-in-container koşumu
+  (dockerizeSpawn ile konteynerde `npx tsc --version`, ~25s) doğrulandı.
+- **5e cross-provider canlı:** **OPENAI_API_KEY yok** + gate'li canlı koşum testi repo'da mevcut
+  değil (factory cross-provider testleri offline fetch-stub'lı) → cross-provider canlı doğrulama
+  **koşulamadı ve bilinçli atlanan doğrulama olarak raporlandı** (fail-open yok; R32 sözleşmesi).
+  Faz 7+ adayı: OPENAI_API_KEY'li ortamda manuel canlı koşum veya gate'li test ekleme.
+
+### Kabul checklist (R33)
+
+| Kriter | Kanıt |
+| --- | --- |
+| ✅ (a) mevcut paket bozulmaz (faz 5 kapanışı: 296+1skip) | `npx vitest run` — faz 6 kapanışında **307+1skip / 34 dosya** |
+| ✅ (b) multi-repo aggregate aritmetiği + salt-okunur hedef store | `tests/cli/cli.test.ts` — "R30: eval --repos iki repo golden setini agregasyonla koşar; hedef store'lar salt-okunur" (aggregate tam-şekil `toEqual` pin + payload.repo kanıtı) |
+| ✅ (c) fail-closed girişler | `tests/cli/cli.test.ts` — "R30: --repos var olmayan yol → fail-closed hata" + "R30: golden'ı hiçbir hedef repoda yok → fail-closed hata (boş koşum yok)" |
+| ✅ (d) tek-repo geriye-uyumluluk | `tests/eval/evalRunner.test.ts` — "R30: repo verilmeyen koşumda payload.repo undefined (geriye-uyumlu regrezyon pini)" |
+| ✅ (e) hijyen pin'leri (R31) | `tests/shell/reviewDiff.test.ts` (reDel ws simetri + hunk-içi varyant), `tests/evolution/evolve.test.ts` (prompt-ctx eval- dışlaması), `tests/eval/evalRunner.test.ts` (policyHash key-order), `tests/golden/draft.test.ts` (readGoldenDraftFiles tek kapı) |
+| ✅ (f) tsconfig strict | `npm run typecheck:tests` (`npx tsc -p tsconfig.test.json`) — build-level komut olarak kanılanır (R28e hükmü aynen) |
+
 Detaylı tasarım: `docs/superpowers/specs/2026-11-18-ai-dev-loop-design.md`

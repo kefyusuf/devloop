@@ -7,7 +7,7 @@ import { loadGoldenTasks } from '../../src/eval/golden.js';
 import type { DevloopEvent } from '../../src/contracts/events.js';
 // hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcıları
 import { queryTyped } from '../helpers/events.js';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, cpSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -395,5 +395,90 @@ describe('CLI', () => {
       expect(existsSync(join(dir, '.devloop', 'golden-drafts', `${id}.task.json`))).toBe(false);
       expect(existsSync(join(dir, '.devloop', 'golden', `${id}.task.json`))).toBe(true);
     } finally { console.log = origLog; }
+  });
+
+  // R30 (faz 6 T2): multi-repo eval — golden set agregasyonu (Yaklaşım 1). İki fixture repo
+  // (A: 2 golden, B: 1 golden) ORCHESTRATOR cwd'sinden koşulur; hedef store'lar SALT-OKUNUR
+  // (kanıt orchestrator store'una yazılır — EvalRun payload.repo kök alanı). Fixture kalıbı
+  // tests/e2e/goldenDraft.test.ts ile aynı: ts-repo fixture + smoke vitest testi (tests gate
+  // gerçekten koşar) + temiz golden görevleri (gatesPass true, bulgusuz) → per-repo score 100.
+  it('R30: eval --repos iki repo golden setini agregasyonla koşar; hedef store\'lar salt-okunur', async () => {
+    const fixture = join(process.cwd(), 'tests', 'fixtures', 'ts-repo');
+    const GOLDEN = {
+      goldenId: 'g0',
+      taskSpec: { id: 'gt0', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/math.ts\n+++ b/src/math.ts\n@@ -1 +1,2 @@\n const x=1;\n+export const sum=(a:number,b:number)=>a+b;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    };
+    const makeFixtureRepo = (prefix: string, taskCount: number): string => {
+      const repo = mkdtempSync(join(tmpdir(), prefix));
+      cpSync(fixture, repo, { recursive: true });
+      mkdirSync(join(repo, 'tests'), { recursive: true });
+      writeFileSync(join(repo, 'tests', 'smoke.test.ts'), "import { test, expect } from 'vitest';\ntest('smoke', () => { expect(1 + 1).toBe(2); });\n", 'utf8');
+      mkdirSync(join(repo, '.devloop', 'golden'), { recursive: true });
+      for (let i = 0; i < taskCount; i++) {
+        writeFileSync(join(repo, '.devloop', 'golden', `g${i}.task.json`), JSON.stringify({ ...GOLDEN, goldenId: `g${i}`, taskSpec: { ...GOLDEN.taskSpec, id: `gt${i}` } }));
+      }
+      return repo;
+    };
+    const repoA = makeFixtureRepo('cli-r30a-', 2);
+    const repoB = makeFixtureRepo('cli-r30b-', 1);
+    const orch = mkdtempSync(join(tmpdir(), 'cli-r30o-')); // orchestrator cwd — kendi golden'ı YOK
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    try {
+      await buildCli(orch).parseAsync(['node', 'devloop', 'eval', '--repos', `${repoA},${repoB}`]);
+    } finally {
+      console.log = origLog;
+    }
+    const parsed = JSON.parse(out.join('\n')) as {
+      perRepo: Array<{ repo: string; evalId: string; goldenCount: number; passed: number; failed: number; score: number; invalid: string[]; perTask: Array<{ goldenId: string; pass: boolean; reasons: string[] }>; configSnapshot: Record<string, unknown>; l3Active: boolean }>;
+      aggregate: { totalTasks: number; totalPassed: number; totalFailed: number; weightedScore: number; mergedInvalid: string[] };
+    };
+    expect(parsed.perRepo).toHaveLength(2);
+    expect(parsed.perRepo[0].repo).toBe(repoA);
+    expect(parsed.perRepo[1].repo).toBe(repoB);
+    expect(parsed.perRepo[0].goldenCount).toBe(2);
+    expect(parsed.perRepo[1].goldenCount).toBe(1);
+    expect(parsed.perRepo[0].passed).toBe(2);
+    expect(parsed.perRepo[1].passed).toBe(1);
+    expect(parsed.perRepo[0].score).toBe(100);
+    expect(parsed.perRepo[1].score).toBe(100);
+    expect(parsed.perRepo[0].l3Active).toBe(false); // 2 < varsayılan l3MinGoldenTasks=50 — PER-REPO kapı
+    // aggregate aritmetiği + şekli: l3Active aggregate'te YOK (L3 kapı hükmü — birleşik set
+    // eşik kapıyı açmaz; toEqual birebir şekil eşleşmesi fazladan alanı da reddeder)
+    expect(parsed.aggregate).toEqual({ totalTasks: 3, totalPassed: 3, totalFailed: 0, weightedScore: 100, mergedInvalid: [] });
+    expect('l3Active' in parsed.aggregate).toBe(false);
+    // kanıt orchestrator store'unda — 2 EvalRun, payload.repo kök alanı A/B sırasıyla
+    const orchStore = new VerdictStore(join(orch, '.devloop', 'events.jsonl'));
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const runs = queryTyped(orchStore, { type: 'EvalRun' });
+    expect(runs).toHaveLength(2);
+    expect(runs[0].payload.repo).toBe(repoA);
+    expect(runs[1].payload.repo).toBe(repoB);
+    // hedef repo store'ları salt-okunur: eval hedef .devloop/events.jsonl'e YAZMAZ
+    expect(existsSync(join(repoA, '.devloop', 'events.jsonl'))).toBe(false);
+    expect(existsSync(join(repoB, '.devloop', 'events.jsonl'))).toBe(false);
+  }, 120_000); // gerçek subprocess koşumları (3 görev × eslint/tsc/vitest) — genel testTimeout 15s yeterli değil
+
+  // R30 fail-closed girişler — kısmi koşum YOK: preflight TÜM yolları ve golden sayılarını
+  // doğrular, tek hatalı giriş bile hiçbir repoda koşum başlatmaz (kanıt yazılmaz).
+  it('R30: --repos var olmayan yol → fail-closed hata', async () => {
+    const orch = mkdtempSync(join(tmpdir(), 'cli-r30x-'));
+    const missing = join(orch, 'olmayan-repo');
+    await expect(buildCli(orch).parseAsync(['node', 'devloop', 'eval', '--repos', missing]))
+      .rejects.toThrow('yolu yok');
+    // fail-closed: hata yolunda kanıt YAZILMAZ
+    expect(existsSync(join(orch, '.devloop', 'events.jsonl'))).toBe(false);
+  });
+  it('R30: golden\'ı hiçbir hedef repoda yok → fail-closed hata (boş koşum yok)', async () => {
+    const orch = mkdtempSync(join(tmpdir(), 'cli-r30e-'));
+    const a = mkdtempSync(join(tmpdir(), 'cli-r30e1-'));
+    const b = mkdtempSync(join(tmpdir(), 'cli-r30e2-'));
+    mkdirSync(join(a, '.devloop', 'golden'), { recursive: true }); // boş golden dizinleri
+    mkdirSync(join(b, '.devloop', 'golden'), { recursive: true });
+    await expect(buildCli(orch).parseAsync(['node', 'devloop', 'eval', '--repos', `${a},${b}`]))
+      .rejects.toThrow('hiçbir hedef repoda golden task yok');
+    expect(existsSync(join(orch, '.devloop', 'events.jsonl'))).toBe(false);
   });
 });

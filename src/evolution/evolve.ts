@@ -29,6 +29,20 @@ export interface EvolveContext {
   l3MinGoldenTasks: number;
 }
 
+// faz 5 T6 (R26g) → R31 (faz 6 T1): sinyal dışlama predicate'i modül düzeyine taşındı — hüküm:
+// brief predicate'i generateEvolutionCandidates YERELİ olarak tanımlıydı; aday sayımı ile LLM
+// prompt-ctx iki tüketici arası duplicate mantık YARATMAMAK için tek kaynağa çıkarıldı.
+// R26g (faz 5 T6): shadow/candidate-etiketli koşum id'leri + eval- prefix'li run_id'ler (production
+// eval dâhil) sinyal DIŞI — evalRunner runId sözleşmesi `eval-<evalId>` olduğundan prefix, aday
+// etiketli olmayan production eval koşumlarını da kapsar (test-diff sayımı + karar bucket'ları +
+// R31: prompt bağlamı — R26g'nin kapsam dışı bıraktığı yüzey).
+function signalExcludedFor(store: VerdictStore): (runId: string) => boolean {
+  const shadowRunIds = new Set(store.query({ type: 'EvalRun' })
+    .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun' && 'candidate' in e.payload.configSnapshot)
+    .map((e) => e.run_id));
+  return (runId: string): boolean => shadowRunIds.has(runId) || runId.startsWith('eval-');
+}
+
 export function generateEvolutionCandidates(ctx: EvolveContext, baseline: EvalSummary): EvolutionCandidate[] {
   if (ctx.goldenCount < ctx.l3MinGoldenTasks) return []; // R10 eşik
   // Fix round 1 (sinyal kirliliği): candidate-labeled (shadow/eval) koşumların kanıtları sinyal
@@ -37,13 +51,8 @@ export function generateEvolutionCandidates(ctx: EvolveContext, baseline: EvalSu
   // ile FindingEmitted olarak yazılır) 2. evolve --shadow'dan sonra kendi kendine playbook-
   // generator adayı üretir (self-noise). Karar bucket'larına da aynı filtre uygulanır — bugün
   // shadow koşumda HumanDecision oluşmaz ama invariant açık ve geleceğe hazır olsun.
-  const shadowRunIds = new Set(ctx.store.query({ type: 'EvalRun' })
-    .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun' && 'candidate' in e.payload.configSnapshot)
-    .map((e) => e.run_id));
-  // R26g (faz 5 T6): eval- prefix'li run_id'ler (production eval dâhil) de sinyal DIŞI — shadow
-  // kuralının genişletmesi. evalRunner runId sözleşmesi `eval-<evalId>` olduğundan prefix, aday
-  // etiketli olmayan production eval koşumlarını da kapsar (test-diff sayımı + karar bucket'ları).
-  const signalExcluded = (runId: string): boolean => shadowRunIds.has(runId) || runId.startsWith('eval-');
+  // R31 (faz 6 T1): predicate modül düzeyindeki signalExcludedFor'dan (eval- dâhil, tek kaynak).
+  const signalExcluded = signalExcludedFor(ctx.store);
   const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !signalExcluded(e.run_id));
   const findings = ctx.store.query({ type: 'FindingEmitted' })
     .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted') // union daraltma (strict tsc — learn.ts ile aynı desen)
@@ -119,8 +128,9 @@ type LlmMutationsOutput = z.infer<typeof LlmMutationsOutput>;
  *    AYNI per-task kural (goldenRegressions) + sözleşmenin literal aggregate şartı
  *    (shadowEval.failed > baseline.failed; perTask boş/uyumsuz hand-summary'lerde de kapı vurulur).
  * Prompt: verdict pattern'leri (generateEvolutionCandidates bucket mantığından özet — aynı sinyal
- * filtresi: candidate/shadow koşum kanıtları SAYILMAZ, self-noise koruması aynen) + baseline/shadow
- * perTask farkları. LLM adayları deterministik adaylarla AYNI yere staging edilir
+ * filtresi: candidate/shadow koşum kanıtları SAYILMAZ, self-noise koruması aynen; R31 faz 6 T1:
+ * filtre signalExcludedFor üzerinden, eval- prefix'li koşumlar prompt bağlamına da girmez) +
+ * baseline/shadow perTask farkları. LLM adayları deterministik adaylarla AYNI yere staging edilir
  * (writeShadowCandidates → candidate/<evoId>.json) ve insan onayına kalır.
  */
 export async function generateLlmMutations(args: {
@@ -136,15 +146,15 @@ export async function generateLlmMutations(args: {
       ? `Evolve reddedildi: golden gerileme (${regressions.join(', ')})`
       : `Evolve reddedildi: golden gerileme (aggregate failed ${baseline.failed} → ${shadowEval.failed})`);
   }
-  // Prompt kaynağı 1 — verdict pattern'leri: bucket mantığının özeti (aynı sinyal filtresi).
-  const shadowRunIds = new Set(ctx.store.query({ type: 'EvalRun' })
-    .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun' && 'candidate' in e.payload.configSnapshot)
-    .map((e) => e.run_id));
+  // Prompt kaynağı 1 — verdict pattern'leri: bucket mantığının özeti. R31 (faz 6 T1): AYNI sinyal
+  // filtresi signalExcludedFor üzerinden — shadow/eval- koşum bulguları VE kararları LLM prompt
+  // satırlarına sızmaz (R26g'nin prompt yüzeyinde bıraktığı boşluk; duplicate mantık yok).
+  const signalExcluded = signalExcludedFor(ctx.store);
   const findings = ctx.store.query({ type: 'FindingEmitted' })
     .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted') // union daraltma (strict tsc — generateEvolutionCandidates ile aynı desen)
-    .filter((e) => !shadowRunIds.has(e.run_id));
+    .filter((e) => !signalExcluded(e.run_id));
   const byFinding = new Map<string, string>(findings.map((e) => [e.event_id, e.payload.finding.category]));
-  const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !shadowRunIds.has(e.run_id));
+  const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !signalExcluded(e.run_id));
   const buckets = new Map<string, string[]>();
   for (const d of decisions) {
     if (d.type !== 'HumanDecision') continue;

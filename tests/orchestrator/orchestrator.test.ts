@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { canonicalJson } from '../../src/util/canonicalJson.js'; // R31: policyHash pin seed'i orchestrator'la aynı algoritma
 import type { StageResult } from '../../src/contracts/review.js';
 import type { Finding, Artifact } from '../../src/contracts/schemas.js';
 import type { LlmGateway, TokenUsage } from '../../src/gateway/gateway.js';
@@ -171,7 +172,8 @@ describe('Orchestrator', () => {
     const repo = initRepo();
     execSync('git branch devloop/task-1', { cwd: repo }); // Fix round 1: çöken önceki koşumun bıraktığı stale branch
     const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
-    await store.append('RunStarted', 'run-x', '-', 'o', { configSnapshot: { policyHash: createHash('sha256').update(JSON.stringify(policy)).digest('hex').slice(0, 16) } });
+    // hüküm: R31 policyHash canonicalJson seed — değer değişimi bilinçli (seed orchestrator'ın AYNI hash ifadesiyle yazılır, aksi halde resume panic).
+    await store.append('RunStarted', 'run-x', '-', 'o', { configSnapshot: { policyHash: createHash('sha256').update(canonicalJson(policy)).digest('hex').slice(0, 16) } });
     await store.append('TaskPicked', 'run-x', 'task-1', 'o', { taskSpec: { id: 'task-1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] } });
     await store.append('TaskBlocked', 'run-x', 'task-2', 'o', { reason: 'gate-fail' });
     const backend = fakeBackend();

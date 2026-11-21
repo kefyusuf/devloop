@@ -555,6 +555,42 @@ describe('Faz 5 değişmezleri (R28)', () => {
   });
 });
 
+// Faz 6 değişmezleri (R33): her faz-6 kabul kriteri değişmez olarak burada pinlenir VEYA mevcut
+// testlere referansla kanılanır (duplike yok — R33 hükmü). Referanslar:
+// (b) aggregate aritmetiği (tam-şekil toEqual pin) + salt-okunur hedef store + EvalRun payload.repo →
+//   tests/cli/cli.test.ts ('R30: eval --repos iki repo golden setini agregasyonla koşar; hedef
+//   store\'lar salt-okunur');
+// (c) fail-closed girişler → tests/cli/cli.test.ts ('R30: --repos var olmayan yol → fail-closed
+//   hata', 'R30: golden\'ı hiçbir hedef repoda yok → fail-closed hata (boş koşum yok)');
+// (d) tek-repo geriye-uyumluluk → tests/eval/evalRunner.test.ts ('R30: repo verilmeyen koşumda
+//   payload.repo undefined (geriye-uyumlu regrezyon pini)');
+// (e) hijyen pin'leri → tests/shell/reviewDiff.test.ts ('R31: trailing-ws `--- /dev/null ` silme
+//   header adayıdır (reDevNull ile simetrik)'), tests/evolution/evolve.test.ts ("R31: eval-
+//   prefix'li koşum bulgusu LLM mutasyon prompt bağlamına girmez"), tests/eval/evalRunner.test.ts
+//   ('R31: policyHash key-order duyarlı DEĞİL (canonicalJson seed)'), tests/golden/draft.test.ts
+//   ('R31: readGoldenDraftFiles — *.task.json adları, dizin yoksa []').
+// Aşağıdaki değişmez yalnız invariants düzeyinde eksik kalan README hizasıdır — Faz 5 README
+// hizası kalıbı aynen (bölüm/anahtar-kelime pini; bölüm silinir veya isim değişirse test kırılır).
+describe('Faz 6 değişmezleri (R33)', () => {
+  it('README faz 6: multi-repo eval + hijyen batch + canlı doğrulama + kabul checklist dokümante (R30/R31/R32/R33)', () => {
+    const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
+    expect(readme).toContain('## Faz 6');
+    // R30 multi-repo eval: kullanım + aggregate şekli + salt-okunur hedef ilkesi
+    expect(readme).toContain('--repos');
+    expect(readme).toContain('weightedScore');
+    expect(readme).toContain('perRepo');
+    expect(readme).toContain('salt-okunur');
+    // R31 hijyen batch: tek predicate + policyHash canonicalJson (key-order determinizmi)
+    expect(readme).toContain('signalExcludedFor');
+    expect(readme).toContain('canonicalJson');
+    // R32 canlı doğrulama sonucu (honest): Docker koşumu + cross-provider bilinçli atlama raporu
+    expect(readme).toContain('DEVLOOP_DOCKER');
+    expect(readme).toContain('OPENAI_API_KEY');
+    // R33 kabul kanıt haritası
+    expect(readme).toContain('Kabul checklist (R33)');
+  });
+});
+
 // Düzeltme 9 (opsiyonel — dahil edildi): README/CLI fiil hizası koruması; ucuz, gürültü değil.
 describe('README hizası', () => {
   it('README, CLI fiilleriyle hizalı (run/decide/learn/status + faz 3: eval/evolve + faz 4: golden/evolve --llm)', () => {

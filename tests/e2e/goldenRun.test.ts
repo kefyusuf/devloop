@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { canonicalJson } from '../../src/util/canonicalJson.js'; // R31: policyHash pin seed'i orchestrator'la aynı algoritma
 import type { StageResult, ReviewStage } from '../../src/contracts/review.js';
 import type { Artifact } from '../../src/contracts/schemas.js';
 // hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcısı
@@ -104,7 +105,8 @@ describe('E2E golden koşu (A6 değişmezleri)', () => {
     const { repo, store } = freshRepo();
     // Düzeltme 1: resume politika-kayma kontrolü (T12) 'h' sabitini panic'e düşürür —
     // seed, orchestrator'ın kullandığı AYNI hash ifadesiyle yazılır (policy = testin override'u).
-    await store.append('RunStarted', 'run-x', '-', 'o', { configSnapshot: { policyHash: createHash('sha256').update(JSON.stringify(policy)).digest('hex').slice(0, 16) } });
+    // hüküm: R31 policyHash canonicalJson seed — değer değişimi bilinçli (seed orchestrator'la aynı algoritmayı izler).
+    await store.append('RunStarted', 'run-x', '-', 'o', { configSnapshot: { policyHash: createHash('sha256').update(canonicalJson(policy)).digest('hex').slice(0, 16) } });
     await store.append('TaskPicked', 'run-x', 'task-1', 'o', { taskSpec: { id: 'task-1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] } });
     const summary = await new Orchestrator(deps(repo, store)).run(join(repo, 'tasks.json'));
     expect(summary.prs).toHaveLength(1);

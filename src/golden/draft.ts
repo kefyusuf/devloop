@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { VerdictStore } from '../store/store.js';
 import type { GoldenTask } from '../eval/golden.js';
@@ -99,4 +99,13 @@ export function acceptDraft(draftsDir: string, goldenDir: string, draftId: strin
 
 export function discardDraft(draftsDir: string, draftId: string): void {
   rmSync(join(draftsDir, `${draftId}.task.json`), { force: true });
+}
+
+// R31 (faz 6 T1, T7 minor): golden-drafts staging okuma TEK KAPI — cli 'status' goldenDrafts
+// sayacı ile 'golden list' ad listesi AYNI helper'ı kullanır (inline *.task.json filtresi
+// duplicate'ti). Dizin yoksa [] (fail-soft — boş koşumda status/golden list davranışı aynen).
+export function readGoldenDraftFiles(repoPath: string): string[] {
+  const dir = join(repoPath, '.devloop', 'golden-drafts');
+  try { return readdirSync(dir).filter((n) => n.endsWith('.task.json')); }
+  catch { return []; }
 }
