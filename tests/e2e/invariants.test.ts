@@ -18,6 +18,8 @@ import { OpenAIGateway } from '../../src/gateway/openai.js';
 import { dockerizeSpawn } from '../../src/shell/sandbox.js';
 import { composeReviewerLessons } from '../../src/shell/composeLessons.js';
 import { DevloopEventSchema, makeEnvelope } from '../../src/contracts/events.js';
+// hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcısı
+import { queryTyped } from '../helpers/events.js';
 import { z } from 'zod';
 import { mkdtempSync, readFileSync, mkdirSync, readdirSync, cpSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,7 +47,8 @@ vi.mock('../../src/adapters/typescript/index.js', async (importOriginal) => {
 // Düzeltme 5: "type":"module" altında require geçersiz — statik ESM import.
 const base = loadConfig(process.cwd()).policy;
 const ctx = (): ReviewContext => ({ taskSpec: { id: 't', description: 'd', acceptanceCriteria: ['a'], filesScope: [] }, artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, repoPath: '.', riskScore: 0 });
-const F = (id: string, category: string, severity: Finding['severity']): Finding => ({ id, stage: 's', category, severity, confidence: 1, evidence: { file: 'a.ts', line: 1 } });
+// hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+const F = (id: string, category: string, severity: Finding['severity']): Finding => ({ id, stage: 's', category, severity, confidence: 1, corroborated: false, evidence: { file: 'a.ts', line: 1 } });
 const mkStage = (name: string, status: 'pass' | 'fail' | 'error' | 'skipped') => ({ name, kind: 'gate' as const, evaluate: vi.fn(async () => ({ status, findings: [], durationMs: 1 })) });
 
 describe('A6 değişmez kural paketi', () => {
@@ -61,11 +64,13 @@ describe('A6 değişmez kural paketi', () => {
 
   it('bütçe: çok çağrılı gerçek usage toplamı ile durur', async () => {
     let n = 0;
-    const inner: LlmGateway = { complete: vi.fn(async () => { n++; return { data: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.5 } }; }) };
+    // hüküm: tsconfig.test kapsamı — vi.fn anonim mock'u genel complete imzasına atanamaz; cast gerekli
+    const inner: LlmGateway = { complete: vi.fn(async () => { n++; return { data: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.5 } }; }) as unknown as LlmGateway['complete'] };
     const bg = new BudgetedGateway(inner, 1.0, () => {});
-    await bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' });
-    await bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' }); // toplam 1.0
-    await expect(bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' })).rejects.toThrow('Bütçe');
+    // hüküm: tsconfig.test kapsamı — parse parametresi implicit any idi; unknown anotasyonu
+    await bg.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' });
+    await bg.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' }); // toplam 1.0
+    await expect(bg.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' })).rejects.toThrow('Bütçe');
     expect(n).toBe(2);
   });
 
@@ -107,7 +112,8 @@ describe('Faz 2 değişmezleri (R7)', () => {
     // Hüküm: BudgetedGateway post-call eşiği `>` olduğundan 0.6+0.6 aşımı İKİNCİ çağrıda (toplam bütçeyi
     // o an geçtiği için) post-call BudgetExceededError verir; üçüncü çağrı ise ön-kontrolle kapalıdır.
     let n = 0;
-    const inner: LlmGateway = { complete: vi.fn(async () => { n++; return { data: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.6 } }; }) };
+    // hüküm: tsconfig.test kapsamı — vi.fn anonim mock'u genel complete imzasına atanamaz; cast gerekli
+    const inner: LlmGateway = { complete: vi.fn(async () => { n++; return { data: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.6 } }; }) as unknown as LlmGateway['complete'] };
     const bg = new BudgetedGateway(inner, 1.0, () => {});
     await bg.complete(req); // generator kaynağı: 0.6 — tek başına serbest
     await expect(bg.complete(req)).rejects.toThrow('Bütçe'); // reviewer kaynağı: kümülatif 1.2 > 1.0 → post-call reddi
@@ -190,7 +196,8 @@ describe('Faz 2 değişmezleri (R7)', () => {
       const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
       const summary = await new Orchestrator(orchDeps(repo, store)).run(join(repo, 'tasks.json'));
       expect(summary.prs).toHaveLength(1); // koşum gerçekten tamlandı (erken abort boş kanıt bırakmaz)
-      const snap = store.query({ type: 'RunStarted' })[0].payload.configSnapshot;
+      // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+      const snap = queryTyped(store, { type: 'RunStarted' })[0].payload.configSnapshot;
       return String(snap.gateConfigHash);
     };
     const h1 = await runRepo('{"compilerOptions":{"strict":true}}');
@@ -414,7 +421,8 @@ describe('Faz 4 değişmezleri (R23)', () => {
     const legsOff = createGateways({ ...base, llm: { ...base.llm, crossProviderFallback: false } });
     expect(legsOff).toHaveLength(1);
     expect(legsOff[0]).toBeInstanceOf(AnthropicGateway);
-    const fetchMockOff = vi.fn(async () => anthropicResponse(500));
+    // hüküm: tsconfig.test kapsamı — sıfır-parametre mock'un calls tuple'ı boş; rest parametresi gerekli
+    const fetchMockOff = vi.fn(async (..._args: unknown[]) => anthropicResponse(500));
     vi.stubGlobal('fetch', fetchMockOff);
     await expect(legsOff[0].complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
     expect(fetchMockOff.mock.calls.every((c) => String(c[0]).includes('api.anthropic.com'))).toBe(true);

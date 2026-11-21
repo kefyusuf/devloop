@@ -103,7 +103,8 @@ describe('createGateways + ChainedGateway (R21 cross-provider fallback)', () => 
     expect(legs).toHaveLength(1);
     expect(legs[0]).toBeInstanceOf(AnthropicGateway);
     expect(legs[0]).not.toBeInstanceOf(ChainedGateway);
-    const fetchMock = vi.fn(async () => anthropicResponse('x', 500));
+    // hüküm: tsconfig.test kapsamı — sıfır-parametre mock'un calls tuple'ı boş; rest parametresi gerekli
+    const fetchMock = vi.fn(async (..._args: unknown[]) => anthropicResponse('x', 500));
     vi.stubGlobal('fetch', fetchMock);
     await expect(legs[0].complete({ system: 's', user: 'q', schema: Schema, runId: 'r' })).rejects.toBeInstanceOf(GatewayError);
     expect(fetchMock.mock.calls.every((c) => String(c[0]).includes('api.anthropic.com'))).toBe(true);

@@ -24,7 +24,8 @@ describe('LlmReviewerStage', () => {
   });
   it('reviewer hedefli dersler prompt\'a girer; generator hedefli girmez', async () => {
     let captured = '';
-    const gateway: LlmGateway = { complete: vi.fn(async (req: { system: string; schema: z.Zod<unknown> }) => { captured = req.system; return { data: { findings: [] }, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 } }; }) } as unknown as LlmGateway;
+    // hüküm: tsconfig.test kapsamı — zod v3 dışa aktarımı ZodType (z.Zod genel ad alan üyesi değil)
+    const gateway: LlmGateway = { complete: vi.fn(async (req: { system: string; schema: z.ZodType<unknown> }) => { captured = req.system; return { data: { findings: [] }, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 } }; }) } as unknown as LlmGateway;
     const lessons = { reviewerContext: () => 'REVIEWER DERSİ: performance bulgularında kanıt eşiğini yükselt.' };
     await new LlmReviewerStage(gateway, lessons).evaluate(ctx);
     expect(captured).toContain('REVIEWER DERSİ');

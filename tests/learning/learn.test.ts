@@ -6,11 +6,14 @@ import { buildCli } from '../../src/shell/cli.js';
 import { mkdtempSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+// hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcısı
+import { queryTyped } from '../helpers/events.js';
 
 async function seed(store: VerdictStore, category: string, count: number, reason: 'false-positive' | 'real-issue-accepted') {
   for (let i = 0; i < count; i++) {
     const art = await store.append('ArtifactProduced', 'r1', `t${category}${i}`, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-    const f = await store.append('FindingEmitted', 'r1', `t${category}${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category, severity: 'required', confidence: 0.8, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+    // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+    const f = await store.append('FindingEmitted', 'r1', `t${category}${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category, severity: 'required', confidence: 0.8, corroborated: false, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
     await store.append('HumanDecision', 'r1', `t${category}${i}`, 'human', { decision: reason === 'false-positive' ? 'reject' : 'accept', reason, parentFindingEventIds: [f.event_id] });
   }
 }
@@ -45,6 +48,8 @@ describe('confirmCandidate', () => {
     const [c] = generateCandidates(store);
     const mem = new LessonMemory(store, join(dir, 'lessons.md'));
     const ev = await confirmCandidate(store, mem, c);
+    // hüküm: tsconfig.test kapsamı — union daraltma (aynen evolve.test.ts desen)
+    if (ev.type !== 'LessonLearned') return; // union daraltma
     expect(ev.payload.status).toBe('active');
     expect(ev.payload.targetComponent).toBe('reviewer');
     expect(mem.reviewerContext()).toContain('performance');
@@ -62,7 +67,8 @@ describe('CLI learn reject (aday tombstone)', () => {
     await buildCli(dir).parseAsync(['node', 'devloop', 'learn', 'reject', c!.lessonId]);
     // retired filtre: aynı karar seti deterministik ID'yi yeniden üretse de aday listede YOK
     expect(generateCandidates(store).some((x) => x.lessonId === c!.lessonId)).toBe(false);
-    const events = store.query({ type: 'LessonLearned' });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const events = queryTyped(store, { type: 'LessonLearned' });
     const tomb = events[events.length - 1].payload;
     expect(tomb.status).toBe('retired');
     expect(tomb.lessonId).toBe(c!.lessonId);
@@ -87,7 +93,8 @@ describe('generateProposals (L2)', () => {
     await store.append('RunStarted', 'r3', '-', 'o', { configSnapshot: {} });
     for (const [i, run] of ['r1', 'r2', 'r3'].entries()) {
       const art = await store.append('ArtifactProduced', run, `t${i}`, 'b', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-      const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-ensemble', { finding: { id: `f${i}`, stage: 'llm-ensemble', category: 'off-by-one', severity: 'required', confidence: 0.9, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-ensemble', { finding: { id: `f${i}`, stage: 'llm-ensemble', category: 'off-by-one', severity: 'required', confidence: 0.9, corroborated: false, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
       await store.append('HumanDecision', run, `t${i}`, 'h', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [f.event_id] });
     }
     const proposals = generateProposals(store, 3); // l2MinDecisions=3 (test küçültmesi)

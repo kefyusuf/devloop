@@ -144,7 +144,21 @@ export function buildCli(workDir = process.cwd()): Command {
   program.command('status').action(async () => {
     const s = store();
     const chain = validateChain(s.readAll());
-    console.log(`runs=${s.query({ type: 'RunStarted' }).length} prs=${s.query({ type: 'PRCreated' }).length} blocked=${s.query({ type: 'TaskBlocked' }).length} decisions=${s.query({ type: 'HumanDecision' }).length} lessons=${s.query({ type: 'LessonLearned' }).length} chain=${chain.ok ? 'ok' : 'BROKEN: ' + chain.errors.join('; ')}`);
+    // R27 (faz 5 T7): golden ≥50 aktivasyon görünürlüğü — mevcut alanların YANINA additive:
+    // goldenCount = loadGoldenTasks(repoDir()).tasks.length (evolve ctx.goldenCount ile AYNI kaynak:
+    // .devloop/golden/*.task.json, şema-geçerli + duplicate-temiz);
+    // goldenDrafts = golden-drafts/ staging .task.json sayımı (golden list ile aynı kural);
+    // l3Active = goldenCount >= policy.l3MinGoldenTasks (evalRunner l3Active + evolve Kapı 1 ile
+    // AYNI tanım — yeni tanım uydurulmadı);
+    // lastEvalScore = lastEvalRun(s,'production').payload.score (lastEvalRun helper — shadow eval
+    // hariç); konsol kuralı: alan daima yazılır, eval koşumu yoksa literal 'null'.
+    const { policy } = loadConfig(repoDir());
+    const goldenCount = loadGoldenTasks(repoDir()).tasks.length;
+    const draftsDir = join(repoDir(), '.devloop', 'golden-drafts');
+    const goldenDrafts = existsSync(draftsDir) ? readdirSync(draftsDir).filter((n) => n.endsWith('.task.json')).length : 0;
+    const lastEvalScore = lastEvalRun(s, 'production')?.payload.score ?? null;
+    const l3Active = goldenCount >= policy.l3MinGoldenTasks;
+    console.log(`runs=${s.query({ type: 'RunStarted' }).length} prs=${s.query({ type: 'PRCreated' }).length} blocked=${s.query({ type: 'TaskBlocked' }).length} decisions=${s.query({ type: 'HumanDecision' }).length} lessons=${s.query({ type: 'LessonLearned' }).length} chain=${chain.ok ? 'ok' : 'BROKEN: ' + chain.errors.join('; ')} goldenCount=${goldenCount} goldenDrafts=${goldenDrafts} l3Active=${l3Active} lastEvalScore=${lastEvalScore}`);
   });
 
   const learn = program.command('learn').description('aday dersleri listele/onayla');

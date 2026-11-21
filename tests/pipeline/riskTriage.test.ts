@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { RiskTriageStage, computeRisk } from '../../src/pipeline/stages/riskTriage.js';
 import { loadConfig } from '../../src/config/config.js';
 import type { Artifact } from '../../src/contracts/schemas.js';
+// hüküm: tsconfig.test kapsamı (R26h) — riskSignals stage tarafından ctx'e yazılır
+import type { ReviewContext } from '../../src/contracts/review.js';
 
 const policy = loadConfig(process.cwd()).policy;
 const artifact = (files: Array<{ path: string; content: string }>): Artifact =>
@@ -25,7 +27,8 @@ describe('computeRisk', () => {
 describe('RiskTriageStage.evaluate', () => {
   it('ctx.riskScore/riskSignals doldurur; test-diff required bulgu üretir', async () => {
     const stage = new RiskTriageStage(policy);
-    const ctx = { taskSpec: { id: 't', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+    // hüküm: tsconfig.test kapsamı — literal tip riskSignals özelliğini taşımaz; ReviewContext anotasyonu
+    const ctx: ReviewContext = { taskSpec: { id: 't', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
       artifact: artifact([{ path: 'tests/x.test.ts', content: 'x' }]), repoPath: '.', riskScore: 0 };
     const res = await stage.evaluate(ctx);
     expect(res.status).toBe('pass');

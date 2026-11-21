@@ -47,10 +47,12 @@ vi.mock('../../src/evolution/evolve.js', async (importOriginal) => {
   return { ...actual, generateLlmMutations: vi.fn(actual.generateLlmMutations) };
 });
 
-const baseSummary = (over: Partial<EvalSummary> = {}): EvalSummary => ({
-  evalId: 'base-eval', goldenCount: 60, passed: 60, failed: 0, score: 100,
-  perTask: [], configSnapshot: { mode: 'production' }, l3Active: true, ...over,
-});
+// hüküm: tsconfig.test kapsamı — Partial spread'i `invalid?: string[]` union'ı üretir ve
+// EvalSummary'ye atanmaz; Object.assign ile kesişim tipi korunur (atama geçerli)
+const baseSummary = (over: Partial<EvalSummary> = {}): EvalSummary => Object.assign({
+  evalId: 'base-eval', goldenCount: 60, passed: 60, failed: 0, score: 100, invalid: [],
+  perTask: [], configSnapshot: { mode: 'production' }, l3Active: true,
+}, over);
 
 const makeCtx = (dir: string, over: Partial<EvolveContext> = {}): EvolveContext => ({
   store: new VerdictStore(join(dir, 'events.jsonl')),
@@ -65,7 +67,8 @@ const makeCtx = (dir: string, over: Partial<EvolveContext> = {}): EvolveContext 
 async function seedRejects(store: VerdictStore, category: string, runs: string[]) {
   for (const [i, run] of runs.entries()) {
     const art = await store.append('ArtifactProduced', run, `t${i}`, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-    const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category, severity: 'required', confidence: 0.9, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
+    // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+    const f = await store.append('FindingEmitted', run, `t${i}`, 'llm-reviewer', { finding: { id: `f${i}`, stage: 'llm-reviewer', category, severity: 'required', confidence: 0.9, corroborated: false, evidence: { file: 'a.ts', line: i + 1 } }, parentArtifactEventId: art.event_id });
     await store.append('HumanDecision', run, `t${i}`, 'human', { decision: 'reject', reason: 'false-positive', parentFindingEventIds: [f.event_id] });
   }
 }
@@ -99,7 +102,8 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     const ctx = makeCtx(dir);
     for (const [i, run] of ['r1', 'r2'].entries()) {
       const art = await ctx.store.append('ArtifactProduced', run, `td${i}`, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-      await ctx.store.append('FindingEmitted', run, `td${i}`, 'test-gate', { finding: { id: `tf${i}`, stage: 'test-gate', category: 'test-diff', severity: 'required', confidence: 1, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      await ctx.store.append('FindingEmitted', run, `td${i}`, 'test-gate', { finding: { id: `tf${i}`, stage: 'test-gate', category: 'test-diff', severity: 'required', confidence: 1, corroborated: false, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
     }
     const out = generateEvolutionCandidates(ctx, baseSummary());
     expect(out).toHaveLength(1);
@@ -114,7 +118,8 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     const ctx = makeCtx(dir);
     const emitTestDiff = async (run: string, taskId: string) => {
       const art = await ctx.store.append('ArtifactProduced', run, taskId, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-      await ctx.store.append('FindingEmitted', run, taskId, 'risk-triage', { finding: { id: `f-${taskId}`, stage: 'risk-triage', category: 'test-diff', severity: 'optional', confidence: 1, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      await ctx.store.append('FindingEmitted', run, taskId, 'risk-triage', { finding: { id: `f-${taskId}`, stage: 'risk-triage', category: 'test-diff', severity: 'optional', confidence: 1, corroborated: false, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
     };
     // 1 üretim koşumu + 1 shadow koşumu (EvalRun configSnapshot'ta 'candidate') — her biri 1 test-diff
     await emitTestDiff('r-prod-1', 't1');
@@ -142,7 +147,8 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     const ctx = makeCtx(dir);
     const emitTestDiff = async (run: string, taskId: string) => {
       const art = await ctx.store.append('ArtifactProduced', run, taskId, 'backend', { artifact: { diff: 'x', intent: 'i', rejectedAlternatives: [], testEvidence: '', files: [] }, parentTaskEventId: 'p' });
-      await ctx.store.append('FindingEmitted', run, taskId, 'risk-triage', { finding: { id: `f-${taskId}`, stage: 'risk-triage', category: 'test-diff', severity: 'optional', confidence: 1, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      await ctx.store.append('FindingEmitted', run, taskId, 'risk-triage', { finding: { id: `f-${taskId}`, stage: 'risk-triage', category: 'test-diff', severity: 'optional', confidence: 1, corroborated: false, evidence: { file: 'a.ts', line: 1 } }, parentArtifactEventId: art.event_id });
     };
     await emitTestDiff('r-prod-1', 't1');
     await emitTestDiff('r-prod-2', 't2');
@@ -277,7 +283,8 @@ describe('loadAppliedPlaybooks (applied playbook → reviewer prompt, I2)', () =
     let capturedSystem = '';
     let capturedUser = '';
     const gateway: LlmGateway = {
-      complete: vi.fn(async (req: { system: string; user: string; schema: z.Zod<unknown> }) => {
+      // hüküm: tsconfig.test kapsamı — zod v3 dışa aktarımı ZodType (z.Zod genel ad alan üyesi değil)
+      complete: vi.fn(async (req: { system: string; user: string; schema: z.ZodType<unknown> }) => {
         capturedSystem = req.system; capturedUser = req.user;
         return { data: { findings: [] }, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 } };
       }),

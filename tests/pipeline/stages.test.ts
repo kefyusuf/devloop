@@ -17,9 +17,10 @@ const ctx = (diff = '', files: Array<{ path: string; content: string }> = []): R
 
 const failingAdapter: StackAdapter = {
   id: 'fake',
-  async lint() { return [{ id: 'l1', stage: 's', category: 'lint', severity: 'required', confidence: 1, evidence: { file: 'a.ts', line: 1 } }]; },
-  async typecheck() { return [{ id: 't1', stage: 's', category: 'typecheck', severity: 'critical', confidence: 1, evidence: { file: 'b.ts' } }]; },
-  async runTests() { return { passed: false, output: 'Tests  1 failed | 2 passed (3)', findings: [{ id: 'x', stage: 'tests', category: 'tests', severity: 'critical', confidence: 1, evidence: { file: '(test-output)' } }] }; },
+  // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+  async lint() { return [{ id: 'l1', stage: 's', category: 'lint', severity: 'required', confidence: 1, corroborated: false, evidence: { file: 'a.ts', line: 1 } }]; },
+  async typecheck() { return [{ id: 't1', stage: 's', category: 'typecheck', severity: 'critical', confidence: 1, corroborated: false, evidence: { file: 'b.ts' } }]; },
+  async runTests() { return { passed: false, output: 'Tests  1 failed | 2 passed (3)', findings: [{ id: 'x', stage: 'tests', category: 'tests', severity: 'critical', confidence: 1, corroborated: false, evidence: { file: '(test-output)' } }] }; },
 };
 const crashingAdapter: StackAdapter = {
   id: 'crash',

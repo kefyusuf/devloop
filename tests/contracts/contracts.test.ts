@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { FindingSchema, TaskSpecSchema, SEVERITY_ORDER } from '../../src/contracts/schemas.js';
 import { DevloopEventSchema, makeEnvelope } from '../../src/contracts/events.js';
+// hüküm: tsconfig.test kapsamı (R26h) — DevloopEventSchema.parse union döndürür; Envelope daraltması
+import { Envelope } from '../helpers/events.js';
 
 describe('kontrat şemaları', () => {
   it('Finding doğrular; geçersiz şiddet reddedilir', () => {
@@ -15,7 +17,8 @@ describe('kontrat şemaları', () => {
 describe('event union (tip güvenli payload)', () => {
   it('TaskPicked payload alanları tipli erişilir', () => {
     const env = makeEnvelope('r1', 't1', 'o');
-    const ev = DevloopEventSchema.parse({ ...env, type: 'TaskPicked', payload: { taskSpec: { id: 't1', description: 'd', acceptanceCriteria: ['ok'], filesScope: [] } } });
+    // hüküm: tsconfig.test kapsamı — parse çıktısı union; testin kurduğu tip Envelope ile daraltılır
+    const ev = DevloopEventSchema.parse({ ...env, type: 'TaskPicked', payload: { taskSpec: { id: 't1', description: 'd', acceptanceCriteria: ['ok'], filesScope: [] } } }) as Envelope<'TaskPicked'>;
     expect(ev.payload.taskSpec.id).toBe('t1'); // payload: unknown DEĞİL — derleme zamanı erişim
   });
   it('PRCreated commitSha + diffDigest zorunlu', () => {
@@ -32,7 +35,8 @@ describe('event union (tip güvenli payload)', () => {
   });
   it('TaskBlocked parse edilir', () => {
     const env = makeEnvelope('r', 't', 'o');
-    const ev = DevloopEventSchema.parse({ ...env, type: 'TaskBlocked', payload: { reason: 'gate-fail: static-gates' } });
+    // hüküm: tsconfig.test kapsamı — parse çıktısı union; Envelope daraltması
+    const ev = DevloopEventSchema.parse({ ...env, type: 'TaskBlocked', payload: { reason: 'gate-fail: static-gates' } }) as Envelope<'TaskBlocked'>;
     expect(ev.payload.reason).toContain('gate-fail');
   });
   it('StageVerdict parentArtifactEventId zorunlu (I6); errorMessage opsiyonel', () => {
@@ -59,19 +63,21 @@ describe('faz 3 kontratları', () => {
   });
   it('EvalRun gerçek payload doğrulanır', () => {
     const env = makeEnvelope('r', '-', 'eval');
+    // hüküm: tsconfig.test kapsamı — parse çıktısı union; Envelope daraltması (EvalRun)
     const ev = DevloopEventSchema.parse({ ...env, type: 'EvalRun', payload: {
       evalId: 'e1', goldenCount: 3, passed: 2, failed: 1, score: 66.7,
       perTask: [{ goldenId: 'g1', pass: true, reasons: [] }],
       configSnapshot: { mode: 'production' },
-    } });
+    } }) as Envelope<'EvalRun'>;
     expect(ev.payload.comparedTo).toBeUndefined();
     // R15 fix round 1: invalid alanı default'lu — alansız (eski store satırları) payload okunur kalır
     // ve boş listeye düşer; alanlı payload birebir taşınır.
     expect(ev.payload.invalid).toEqual([]);
+    // hüküm: tsconfig.test kapsamı — parse çıktısı union; Envelope daraltması (EvalRun)
     const ev2 = DevloopEventSchema.parse({ ...env, event_id: 'e2', type: 'EvalRun', payload: {
       evalId: 'e2', goldenCount: 1, passed: 1, failed: 0, score: 100, invalid: ['bad.task.json'],
       perTask: [], configSnapshot: { mode: 'production' },
-    } });
+    } }) as Envelope<'EvalRun'>;
     expect(ev2.payload.invalid).toEqual(['bad.task.json']);
   });
 });

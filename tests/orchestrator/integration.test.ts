@@ -12,6 +12,8 @@ import { tmpdir } from 'node:os';
 import { execSync } from 'node:child_process';
 import type { GenerationContext } from '../../src/generator/generator.js';
 import type { Artifact } from '../../src/contracts/schemas.js';
+// hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcısı
+import { queryTyped } from '../helpers/events.js';
 
 // Final review entegrasyon testi (C1 + C2): gerçek TypeScriptAdapter + gerçek ReviewPipeline
 // (risk-triage + static-gates) orchestrator'un KENDİNİN açtığı repo-içi worktree üzerinden uçtan
@@ -63,7 +65,8 @@ describe('orchestrator uçtan uca kablolama (C1 repo bağlamı + C2 repo-içi wo
     expect(execSync('git status --porcelain', { cwd: repo }).toString().trim()).toBe('');
 
     // gerçek gate'ler koştu ve geçti (eslint devloop node_modules fallback'i + gerçek tsc)
-    const verdicts = store.query({ type: 'StageVerdict' }).map((e) => e.payload);
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const verdicts = queryTyped(store, { type: 'StageVerdict' }).map((e) => e.payload);
     expect(verdicts.map((v) => v.stage)).toEqual(['risk-triage', 'static-gates']);
     expect(verdicts.every((v) => v.status === 'pass')).toBe(true);
     // I6: StageVerdict artifact'e bağlanır (validateChain scalar binding'i artık verdict'leri de kapsar)

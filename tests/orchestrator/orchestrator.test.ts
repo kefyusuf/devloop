@@ -12,6 +12,8 @@ import type { StageResult } from '../../src/contracts/review.js';
 import type { Finding, Artifact } from '../../src/contracts/schemas.js';
 import type { LlmGateway, TokenUsage } from '../../src/gateway/gateway.js';
 import { GatewayError } from '../../src/gateway/gateway.js';
+// hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcısı
+import { queryTyped } from '../helpers/events.js';
 
 const base = loadConfig(process.cwd()).policy;
 const policy = { ...base, gates: ['static-gates'], advisory: [], maxFixTours: 3, budgetUsd: 2.0 };
@@ -68,11 +70,12 @@ describe('Orchestrator', () => {
     const backend = fakeBackend();
     const summary = await new Orchestrator(deps(repo, store, { backend })).run(tasksFile(repo, [{ id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] }]));
     expect(summary.prs).toHaveLength(1);
-    const pr = store.query({ type: 'PRCreated' })[0].payload;
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const pr = queryTyped(store, { type: 'PRCreated' })[0].payload;
     expect(pr.commitSha).not.toBeNull();
     // Ruling (pre-flight): orchestrator diff'i gerçek git diff ile değiştirir; assertion sha256(KAYITLI
     // ArtifactProduced.diff) üzerinden yapılır + diff boş değil ve 'src/a.ts' içerir (progress.md).
-    const recorded = store.query({ type: 'ArtifactProduced' })[0].payload.artifact;
+    const recorded = queryTyped(store, { type: 'ArtifactProduced' })[0].payload.artifact;
     expect(recorded.diff.length).toBeGreaterThan(0);
     expect(recorded.diff).toContain('src/a.ts');
     expect(pr.diffDigest).toBe(createHash('sha256').update(recorded.diff).digest('hex'));
@@ -81,7 +84,8 @@ describe('Orchestrator', () => {
     // R4a fix round 1: entegrasyon pin'i — gerçek koşumda RunStarted kanıtına gateConfigHash
     // yazılır (computeGateConfigHash yalnız birim testte kalsaydı append alanı kaybedebilirdi).
     // Fixture repo'da gate config'leri yok → hex ön-ek + absent marker'lar; ön-ek her iki formda pin.
-    const started = store.query({ type: 'RunStarted' })[0];
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const started = queryTyped(store, { type: 'RunStarted' })[0];
     expect(String(started.payload.configSnapshot.gateConfigHash)).toMatch(/^[0-9a-f]{16}/);
   });
 
@@ -91,7 +95,8 @@ describe('Orchestrator', () => {
     const backend = fakeBackend();
     const summary = await new Orchestrator(deps(repo, store, {
       backend,
-      pipeline: failPipeline({ id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, evidence: { file: 'a.ts' } }),
+      // hüküm: tsconfig.test kapsamı — corroborated Finding şemasında zorunlu alan
+      pipeline: failPipeline({ id: 'f', stage: 'static-gates', category: 'lint', severity: 'required', confidence: 1, corroborated: false, evidence: { file: 'a.ts' } }),
     })).run(tasksFile(repo, [{ id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] }]));
     expect(summary.blocked).toEqual(['t1']);
     expect(summary.prs).toHaveLength(0);
@@ -115,14 +120,16 @@ describe('Orchestrator', () => {
     expect(backend.generate.mock.calls[0][1].gateway).toBe(gw); // ctx.gateway = paylaşılan BudgetedGateway
     expect(summary.aborted).toBe('budget');
     expect(summary.prs).toHaveLength(1);
-    expect(store.query({ type: 'RunAborted' })[0].payload.reason).toBe('budget');
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    expect(queryTyped(store, { type: 'RunAborted' })[0].payload.reason).toBe('budget');
   });
 
   it('BudgetedGateway: bütçe sonrası çağrı reddedilir', async () => {
     const inner = costGateway(1.5);
     const bg = new BudgetedGateway(inner, 2.0, () => {});
-    await bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' }); // 1.5
-    await expect(bg.complete({ system: 's', user: 'u', schema: { parse: (x) => x } as never, runId: 'r' })).rejects.toThrow('Bütçe'); // 1.5+1.5=3.0 > 2.0 sonrası
+    // hüküm: tsconfig.test kapsamı — parse parametresi implicit any idi; unknown anotasyonu
+    await bg.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' }); // 1.5
+    await expect(bg.complete({ system: 's', user: 'u', schema: { parse: (x: unknown) => x } as never, runId: 'r' })).rejects.toThrow('Bütçe'); // 1.5+1.5=3.0 > 2.0 sonrası
   });
 
   it('GatewayError → run-level suspend (panic); TaskBlocked spam yok, kalan görev listesi yanmaz (I5)', async () => {
@@ -139,7 +146,8 @@ describe('Orchestrator', () => {
     expect(summary.aborted).toBe('panic');
     expect(summary.blocked).toEqual([]);
     expect(summary.prs).toHaveLength(0);
-    const aborted = store.query({ type: 'RunAborted' });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const aborted = queryTyped(store, { type: 'RunAborted' });
     expect(aborted).toHaveLength(1);
     expect(aborted[0].payload.reason).toBe('panic');
     expect(store.query({ type: 'TaskBlocked' })).toHaveLength(0);
@@ -151,9 +159,10 @@ describe('Orchestrator', () => {
     const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
     const errPipeline = () => new ReviewPipeline([{ name: 'static-gates', kind: 'gate' as const, evaluate: async (): Promise<StageResult> => ({ status: 'error', findings: [], durationMs: 1, errorMessage: 'eslint patladı' }) }], policy);
     await new Orchestrator(deps(repo, store, { pipeline: errPipeline() })).run(tasksFile(repo, [{ id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] }]));
-    const verdict = store.query({ type: 'StageVerdict' })[0].payload;
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const verdict = queryTyped(store, { type: 'StageVerdict' })[0].payload;
     expect(verdict.errorMessage).toBe('eslint patladı');
-    const art = store.query({ type: 'ArtifactProduced' })[0];
+    const art = queryTyped(store, { type: 'ArtifactProduced' })[0];
     expect(verdict.parentArtifactEventId).toBe(art.event_id);
     expect(validateChain(store.readAll()).ok).toBe(true);
   });

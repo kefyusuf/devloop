@@ -10,6 +10,8 @@ import { Orchestrator, type OrchestratorDeps } from '../../src/orchestrator/orch
 import { VerdictStore } from '../../src/store/store.js';
 import { ReviewPipeline } from '../../src/pipeline/pipeline.js';
 import { loadConfig, type Policy } from '../../src/config/config.js';
+// hüküm: tsconfig.test kapsamı (R26h) — payload union daraltma yardımcısı
+import { queryTyped } from '../helpers/events.js';
 import type { StageResult } from '../../src/contracts/review.js';
 import type { Artifact } from '../../src/contracts/schemas.js';
 import type { LlmGateway, TokenUsage } from '../../src/gateway/gateway.js';
@@ -137,7 +139,8 @@ describe('Orchestrator docker sandbox aktivasyonu (R13)', () => {
     const store = new VerdictStore(join(repo, '.devloop', 'events.jsonl'));
     const orch = new Orchestrator(deps(repo, store, dockerPolicy, { dockerProbe: async () => false }));
     await expect(orch.run(tasksFile(repo, [task('t1')]))).rejects.toThrow('docker modu seçili ama Docker kullanılamıyor');
-    const aborted = store.query({ type: 'RunAborted' });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const aborted = queryTyped(store, { type: 'RunAborted' });
     expect(aborted).toHaveLength(1);
     expect(aborted[0].payload.reason).toBe('panic');
     expect(aborted[0].task_id).toBe('-'); // run-level abort — görev-topu değil
