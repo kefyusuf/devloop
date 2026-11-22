@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { randomUUID } from 'node:crypto'; // R37 (faz 7 T3): multi-eval batch id üretimi
 import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { loadConfig, type Policy } from '../config/config.js';
@@ -51,6 +52,37 @@ function lastEvalRun(s: VerdictStore, kind: 'production' | 'shadow'): EvalRunEve
     ? !('candidate' in e.payload.configSnapshot)
     : e.payload.configSnapshot['candidate'] === 'evolve-shadow');
   return filtered[filtered.length - 1];
+}
+
+// R37 (faz 7 T3): en son multi-eval batch'inin PRODUCTION golden toplamı — resolveL3 'ün
+// 'multi-eval' kaynağı ile evolve eşik-altı bildirimindeki multiEvalTotal sayısı AYNI hesabı
+// paylaşır (tek kaynak; iki tüketici iki farklı toplam bulamaz). Kurallar: multiEvalId TAŞIMAYAN
+// EvalRun'lar sayılmaz (eski store satırları — geriye-uyumlu); EN SON batch kazanır (event
+// sırasındaki son multiEvalId değeri — önceki nitelikli batch'ler toplama KATILMAZ: bayat veri
+// kapıyı açamaz); candidate/shadow üyeler dışlanır (lastEvalRun production filtresiyle AYNI
+// kural — configSnapshot'ta 'candidate' anahtarı olanlar); policyHash karşılaştırılmaz — eşik
+// golden VERİ hacmi hakkındadır (R37 spec).
+function latestMultiEvalTotal(s: VerdictStore): number {
+  const batched = s.query({ type: 'EvalRun' })
+    .filter((e): e is EvalRunEvent => e.type === 'EvalRun' && e.payload.multiEvalId !== undefined);
+  if (batched.length === 0) return 0;
+  const latestBatchId = batched[batched.length - 1].payload.multiEvalId;
+  return batched
+    .filter((e) => e.payload.multiEvalId === latestBatchId)
+    .filter((e) => !('candidate' in e.payload.configSnapshot))
+    .reduce((a, e) => a + e.payload.goldenCount, 0);
+}
+// R37 (faz 7 T3): L3 kapı genişletmesi — status + evolve paylaşımlı TEK kapı (iki çağrı noktası
+// iki farklı tanım kullanamaz). Aktif EĞER own goldenCount ≥ eşik (kaynak 'own') YA DA en son
+// multi-eval batch'inin production golden toplamı ≥ eşik (kaynak 'multi-eval'); değilse inaktif
+// (kaynak 'none'). Multi-eval verisi yalnız AKTİVASYONU gerekçelendirir — evrim yine kendi
+// repo'nun golden setinde çalışır (R37 spec).
+// hüküm: plan 'cli.ts lokal helper' der; export YALNIZ test erişimi içindir (status/evolve dışı
+// tüketim yok — modül-içi kullanım + tests/cli/cli.test.ts).
+export function resolveL3(s: VerdictStore, ownGoldenCount: number, policy: Policy): { active: boolean; source: 'own' | 'multi-eval' | 'none' } {
+  if (ownGoldenCount >= policy.l3MinGoldenTasks) return { active: true, source: 'own' };
+  if (latestMultiEvalTotal(s) >= policy.l3MinGoldenTasks) return { active: true, source: 'multi-eval' };
+  return { active: false, source: 'none' };
 }
 
 // R25 (faz 5 T1): decide → GERÇEK run bağlantısı — L3 veri yolu (golden draft acceptedRuns:
@@ -157,8 +189,12 @@ export function buildCli(workDir = process.cwd()): Command {
     // R31 (faz 6 T1, T7 minor): golden-drafts okuma tek kapı — golden list ile AYNI helper (davranış aynen).
     const goldenDrafts = readGoldenDraftFiles(repoDir()).length;
     const lastEvalScore = lastEvalRun(s, 'production')?.payload.score ?? null;
-    const l3Active = goldenCount >= policy.l3MinGoldenTasks;
-    console.log(`runs=${s.query({ type: 'RunStarted' }).length} prs=${s.query({ type: 'PRCreated' }).length} blocked=${s.query({ type: 'TaskBlocked' }).length} decisions=${s.query({ type: 'HumanDecision' }).length} lessons=${s.query({ type: 'LessonLearned' }).length} chain=${chain.ok ? 'ok' : 'BROKEN: ' + chain.errors.join('; ')} goldenCount=${goldenCount} goldenDrafts=${goldenDrafts} l3Active=${l3Active} lastEvalScore=${lastEvalScore}`);
+    // R37 (faz 7 T3): l3Active resolveL3 üzerinden — own goldenCount eşiğin altındayken en son
+    // multi-eval batch'i kapıyı açabilir; l3Source kaynak bildirimidir ve DAİMA yazılır (R27 alan
+    // kuralı: alan hep basılır). EvalSummary.l3Active DEĞİŞMEZ — o koşumun KENDİ setinin eşiğe
+    // göre durumudur (per-run veri); status'taki değer kapı durumdur, iki anlam bilinçli ayrıdır.
+    const l3 = resolveL3(s, goldenCount, policy);
+    console.log(`runs=${s.query({ type: 'RunStarted' }).length} prs=${s.query({ type: 'PRCreated' }).length} blocked=${s.query({ type: 'TaskBlocked' }).length} decisions=${s.query({ type: 'HumanDecision' }).length} lessons=${s.query({ type: 'LessonLearned' }).length} chain=${chain.ok ? 'ok' : 'BROKEN: ' + chain.errors.join('; ')} goldenCount=${goldenCount} goldenDrafts=${goldenDrafts} l3Active=${l3.active} l3Source=${l3.source} lastEvalScore=${lastEvalScore}`);
   });
 
   const learn = program.command('learn').description('aday dersleri listele/onayla');
@@ -329,6 +365,10 @@ export function buildCli(workDir = process.cwd()): Command {
         // KARIŞMAZ (değişken yargıcıyla ölçüm geçersizleşir). R22: composeReviewerLessons filtresi.
         const reviewerLessons = gateway ? composeReviewerLessons([memory(), loadAppliedPlaybooks(repoDir())]) : undefined;
         const perRepo: Array<EvalSummary & { repo: string }> = [];
+        // R37 (faz 7 T3): multi-eval batch işareti — koşum başına TEK id üretilir ve TÜM per-repo
+        // runEval çağrılarına geçirilir (EvalRun payload köküne yazılır); resolveL3 en son batch'i
+        // store'dan bu id üzerinden yeniden hesaplayabilir. Tek-repo koşumda üretilmez/geçilmez.
+        const multiEvalId = `multi-${Date.now()}-${randomUUID().slice(0, 8)}`;
         for (const repo of repos) {
           // Per-repo adapter/stages — hedef repo yoluyla (tek-repo kurulumun birebir karşılığı).
           const adapter = new TypeScriptAdapter(effPolicy, repo); // R13 + I2: sandbox moduna uyar
@@ -352,6 +392,7 @@ export function buildCli(workDir = process.cwd()): Command {
             l3MinGoldenTasks: effPolicy.l3MinGoldenTasks,
             ...(opts.candidate ? { candidate: { label: opts.candidate } } : {}),
             repo,
+            multiEvalId, // R37 (faz 7 T3): batch işareti — aynı --repos koşumunun tüm EvalRun'larında AYNI
           });
           perRepo.push({ ...summary, repo });
         }
@@ -429,13 +470,21 @@ export function buildCli(workDir = process.cwd()): Command {
       const baseEv = lastEvalRun(s, 'production');
       if (!baseEv) throw new Error('Önce production eval koşun');
       const baseline = evalRunToSummary(baseEv.payload, policy.l3MinGoldenTasks);
-      // I4 (final fix wave, spec R9/R10 "eşik altı bildirir"): golden set l3MinGoldenTasks
-      // eşiğinin altındaysa L3 AKTİF DEĞİL — shadow eval HİÇ kurulmaz/koşulmaz (ücretli LLM
-      // ensemble koşumu harcanmaz) ve yalnız açık bildirim döner. Eşik kontrolü baseline ön
-      // koşulundan SONRA: production eval yokluğu ayrı bir kullanıcı hatasıdır ('Önce production
-      // eval koşun' — mevcut sözleşme korunur); eşik altı ise eval harcamanın kendisini engeller.
-      if (ctx.goldenCount < policy.l3MinGoldenTasks) {
-        console.log(JSON.stringify({ l3Active: false, message: `L3 eşik altı (l3MinGoldenTasks=${policy.l3MinGoldenTasks}, golden=${ctx.goldenCount}) — eval koşulmadı` }, null, 2));
+      // I4 (final fix wave, spec R9/R10 "eşik altı bildirir") + R37 (faz 7 T3): L3 kapısı
+      // resolveL3 üzerinden — own goldenCount eşiğin ALTINDAYKEN en son multi-eval batch'inin
+      // production golden toplamı kapıyı AÇABİLİR (kaynak 'multi-eval'; policyHash şartı yok —
+      // eşik golden VERİ hacmi hakkındadır). Kapı kapalıysa shadow eval HİÇ kurulmaz/koşulmaz
+      // (ücretli LLM ensemble koşumu harcanmaz) ve eşik-altı bildirimi İKİ sayıyı da verir
+      // (multiEvalTotal = en son batch'in production toplamı; multiEvalId'li EvalRun yoksa 0).
+      // Eşik kontrolü baseline ön koşulundan SONRA: production eval yokluğu ayrı bir kullanıcı
+      // hatasıdır ('Önce production eval koşun' — mevcut sözleşme korunur); eşik altı ise eval
+      // harcamanın kendisini engeller. Kapı açıldığında evrim YİNE KENDİ repo'nun golden setinde
+      // çalışır — multi-eval verisi yalnız aktivasyonu gerekçelendirir (R37 spec; ctx.goldenCount
+      // küçük kalabilir, operator kararı).
+      const multiEvalTotal = latestMultiEvalTotal(s);
+      const l3 = resolveL3(s, ctx.goldenCount, policy);
+      if (!l3.active) {
+        console.log(JSON.stringify({ l3Active: false, message: `L3 eşik altı (l3MinGoldenTasks=${policy.l3MinGoldenTasks}, golden=${ctx.goldenCount}, multiEvalTotal=${multiEvalTotal}) — eval koşulmadı` }, null, 2));
         return;
       }
       const candidates = generateEvolutionCandidates(ctx, baseline);

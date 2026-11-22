@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { buildCli } from '../../src/shell/cli.js';
+import { buildCli, resolveL3 } from '../../src/shell/cli.js';
 import { VerdictStore } from '../../src/store/store.js';
+// R37 (faz 7 T3): resolveL3 eşik senaryoları için Policy tipi + repo-root policy tabanı
+import { loadConfig, type Policy } from '../../src/config/config.js';
 import { generateProposals } from '../../src/learning/learn.js';
 import { loadGoldenTasks } from '../../src/eval/golden.js';
 // hüküm: tsconfig.test kapsamı (R26h) — Extract daraltması için DevloopEvent tip importu
@@ -494,5 +496,126 @@ describe('CLI', () => {
       .rejects.toThrow('boş repo yolu');
     // fail-closed: hata yolunda kanıt YAZILMAZ
     expect(existsSync(join(orch, '.devloop', 'events.jsonl'))).toBe(false);
+  });
+
+  // R37 (faz 7 T3): resolveL3 gruplama — L3 kapısı own goldenCount eşiğin ALTINDAYKEN en son
+  // multi-eval batch'inin PRODUCTION üyelerinin golden toplamıyla açılabilir. Kurallar:
+  // (1) EN SON batch kazanır — event sırasındaki son multiEvalId değerinin batch'i; önceki
+  //     (nitelikli olsa bile) batch'ler toplama KATILMAZ (bayat veri);
+  // (2) candidate/shadow üyeler sayılmaz (lastEvalRun production filtresiyle AYNI kural —
+  //     configSnapshot'ta 'candidate' anahtarı olanlar dışlanır);
+  // (3) policyHash karşılaştırılmaz — eşik golden VERİ hacmi hakkındadır;
+  // (4) own ≥ eşik → daima 'own' (öncelik), multi-eval verisi ikamet DEĞİL kaynaktır.
+  it('R37: resolveL3 — en son multiEvalId batch\'i, yalnız production üyeler toplam ≥ eşik → multi-eval', async () => {
+    const policy4: Policy = { ...loadConfig(process.cwd()).policy, l3MinGoldenTasks: 4 };
+    const seedBatchedRun = (s: VerdictStore, goldenCount: number, batchId: string, candidate?: string) =>
+      s.append('EvalRun', `eval-${batchId}-${goldenCount}`, '-', 'eval', {
+        evalId: `${batchId}-${goldenCount}`, goldenCount, passed: goldenCount, failed: 0, score: 100,
+        invalid: [], perTask: [], configSnapshot: candidate ? { candidate } : { mode: 'production' }, multiEvalId: batchId,
+      });
+    // (doğru senaryo) batch-1 (prod 2+3) SONRA batch-2 (prod 5) — EN SON batch-2 toplam 5 ≥ 4
+    const s1 = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'cli-r37a-')), '.devloop', 'events.jsonl'));
+    await seedBatchedRun(s1, 2, 'batch-1');
+    await seedBatchedRun(s1, 3, 'batch-1');
+    await seedBatchedRun(s1, 5, 'batch-2');
+    expect(resolveL3(s1, 0, policy4)).toEqual({ active: true, source: 'multi-eval' });
+    // (en-son-batch kazanır + candidate dışlanır) batch-1 prod toplamı 5 ≥ 4 NİTELİKLİYKEN bile
+    // en son batch-2'nin production toplamı = 1 (candidate 10 SAYILMAZ) < 4 → inaktif:
+    // batch-1'in toplamı taşınmaz, candidate üye katılmaz — iki kural tek senaryoda çifte kanıt
+    const s2 = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'cli-r37b-')), '.devloop', 'events.jsonl'));
+    await seedBatchedRun(s2, 2, 'batch-1');
+    await seedBatchedRun(s2, 3, 'batch-1');
+    await seedBatchedRun(s2, 1, 'batch-2');
+    await seedBatchedRun(s2, 10, 'batch-2', 'aday-label');
+    expect(resolveL3(s2, 0, policy4)).toEqual({ active: false, source: 'none' });
+    // (own öncelik) aynı store, own golden=4 ≥ eşik → multi-eval yerine 'own'
+    expect(resolveL3(s2, 4, policy4)).toEqual({ active: true, source: 'own' });
+  });
+  it('R37: multiEvalId\'siz store yalnız own kaynağıyla değerlenir (geriye-uyumlu)', async () => {
+    const policy4: Policy = { ...loadConfig(process.cwd()).policy, l3MinGoldenTasks: 4 };
+    const s = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'cli-r37c-')), '.devloop', 'events.jsonl'));
+    // multiEvalId TAŞIMAYAN production EvalRun'lar — eski store satırları multi-eval kaynağı ÜRETMEZ
+    await s.append('EvalRun', 'eval-p1', '-', 'eval', { evalId: 'p1', goldenCount: 10, passed: 10, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    expect(resolveL3(s, 3, policy4)).toEqual({ active: false, source: 'none' }); // own 3 < 4, multi-eval türetilemez
+    expect(resolveL3(s, 4, policy4)).toEqual({ active: true, source: 'own' }); // own ≥ eşik → 'own' aynen
+  });
+
+  // R37 (faz 7 T3): status l3Active resolveL3 üzerinden genişler + l3Source DAİMA yazılır (R27
+  // alan kuralı). own goldenCount eşiğin altındayken multi-eval batch'i kapıyı açabilir
+  // (l3Source=multi-eval); kapalıyken none. Mevcut faz 5 T7 pinleri (l3Active=false, multi
+  // eventsiz) 'none' yoluyla AYNEN geçer — geriye-uyumluluk bu testle de çifte kanıtlanır.
+  it('R37: status l3Active genişler + l3Source yazılır (multi-eval ile aktif; kapalıyken none)', async () => {
+    const GOLDEN = {
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    };
+    const seedGolden = (dir: string) => {
+      mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+      writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify(GOLDEN));
+    };
+    // aktif-via-multi: policy eşiği 4'e küçültülür; own golden=1 (< 4) ama en son batch-2'nin
+    // production toplamı 2+3+5... değil — EN SON batch-2 yalnız 5 ≥ 4 → l3Active=true multi-eval
+    const dirA = mkdtempSync(join(tmpdir(), 'cli-r37s-'));
+    const policyYaml = readFileSync(join(process.cwd(), 'policy.yaml'), 'utf8').replace('l3MinGoldenTasks: 50', 'l3MinGoldenTasks: 4');
+    writeFileSync(join(dirA, 'policy.yaml'), policyYaml, 'utf8');
+    seedGolden(dirA);
+    const storeA = new VerdictStore(join(dirA, '.devloop', 'events.jsonl'));
+    await storeA.append('EvalRun', 'eval-b1a', '-', 'eval', { evalId: 'b1a', goldenCount: 2, passed: 2, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' }, multiEvalId: 'batch-1' });
+    await storeA.append('EvalRun', 'eval-b1b', '-', 'eval', { evalId: 'b1b', goldenCount: 3, passed: 3, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' }, multiEvalId: 'batch-1' });
+    await storeA.append('EvalRun', 'eval-b2', '-', 'eval', { evalId: 'b2', goldenCount: 5, passed: 5, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' }, multiEvalId: 'batch-2' });
+    const outA: string[] = [];
+    const origLog = console.log; console.log = (m: string) => outA.push(m);
+    try {
+      await buildCli(dirA).parseAsync(['node', 'devloop', 'status']);
+    } finally { console.log = origLog; }
+    expect(outA.join('\n')).toContain('l3Active=true l3Source=multi-eval');
+    // kapalı durum: varsayılan eşik (50), multiEvalId'siz production eval yalnız — none
+    const dirB = mkdtempSync(join(tmpdir(), 'cli-r37s2-'));
+    seedGolden(dirB);
+    const storeB = new VerdictStore(join(dirB, '.devloop', 'events.jsonl'));
+    await storeB.append('EvalRun', 'eval-p', '-', 'eval', { evalId: 'p1', goldenCount: 10, passed: 10, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    const outB: string[] = [];
+    const origLog2 = console.log; console.log = (m: string) => outB.push(m);
+    try {
+      await buildCli(dirB).parseAsync(['node', 'devloop', 'status']);
+    } finally { console.log = origLog2; }
+    expect(outB.join('\n')).toContain('l3Active=false l3Source=none');
+  });
+
+  // R37 (faz 7 T3): evolve eşik-altı bildirimi İKİ sayıyı da verir — multiEvalTotal = en son
+  // multi-eval batch'inin production golden toplamı (batch yoksa 0). Mevcut I4 sözleşmesi aynen:
+  // shadow eval koşulmaz, store'da candidate EvalRun YAZILMAZ, mevcut mesaj parçaları korunur.
+  it('R37: evolve eşik-altı mesajı iki sayıyı verir (multiEvalTotal)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r37e-'));
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify({
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    }));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    // baseline ön koşulu: production EvalRun; golden=1 < 50 eşik altı — multi-eval batch YOK → 0
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 1, passed: 1, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    const runEvolve = async (): Promise<{ l3Active: boolean; message: string }> => {
+      const out: string[] = [];
+      const origLog = console.log; console.log = (m: string) => out.push(m);
+      try {
+        await buildCli(dir).parseAsync(['node', 'devloop', 'evolve', '--shadow']);
+      } finally { console.log = origLog; }
+      return JSON.parse(out.join('\n'));
+    };
+    const r1 = await runEvolve();
+    expect(r1.l3Active).toBe(false);
+    expect(r1.message).toContain('multiEvalTotal=0'); // multiEvalId'li EvalRun yok → 0
+    // multi-eval batch VAR ama production toplam 5 < 50 → hâlâ eşik altı; mesaj GERÇEK toplamı verir
+    await store.append('EvalRun', 'eval-b1a', '-', 'eval', { evalId: 'b1a', goldenCount: 2, passed: 2, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' }, multiEvalId: 'batch-1' });
+    await store.append('EvalRun', 'eval-b1b', '-', 'eval', { evalId: 'b1b', goldenCount: 3, passed: 3, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' }, multiEvalId: 'batch-1' });
+    const r2 = await runEvolve();
+    expect(r2.l3Active).toBe(false);
+    expect(r2.message).toContain('multiEvalTotal=5'); // en son batch-1 production toplamı
+    expect(r2.message).toContain('golden=1');
   });
 });

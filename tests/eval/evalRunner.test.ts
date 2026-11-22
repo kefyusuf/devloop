@@ -192,4 +192,24 @@ describe('runEval', () => {
     expect(candidate.comparedTo).toBe(plain.evalId); // tanımsız koşumun evalId'si — X'in DEĞİL
     expect(plain.evalId).not.toBe(runX.evalId); // önkoşul: evalId'ler gerçekten ayrışıyor (test boşa koşmuyor)
   });
+
+  // R37 (faz 7 T3): multi-eval batch işareti — aynı `--repos` koşumunun TÜM per-repo EvalRun'ları
+  // AYNI multiEvalId değerini payload KÖKÜNDE taşır (repo gibi; configSnapshot'a DEĞİL). resolveL3
+  // en son batch'i bu alandan gruplar. Tek-repo koşumda verilmez → alan hiç yazılmaz (geriye-uyumlu).
+  it('R37: runEval multiEvalId payload köküne yazılır', async () => {
+    const dir = makeRepo([GOLDEN]);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks, multiEvalId: 'multi-1' });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    const evs = queryTyped(store, { type: 'EvalRun' });
+    expect(evs).toHaveLength(1);
+    expect(evs[0].payload.multiEvalId).toBe('multi-1');
+  });
+  it('R37: multiEvalId verilmezse payload.multiEvalId tanımsız kalır (geriye-uyumlu regrezyon pini)', async () => {
+    const dir = makeRepo([GOLDEN]);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
+    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    expect(queryTyped(store, { type: 'EvalRun' })[0].payload.multiEvalId).toBeUndefined();
+  });
 });

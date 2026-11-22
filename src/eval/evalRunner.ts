@@ -41,6 +41,10 @@ export async function runEval(args: {
   // R30 (faz 6 T2): multi-repo eval — hedef repo yolu EvalRun payload KÖKÜNE yazılır
   // (aggregate perRepo alanı payload.repo'dan okunur); tek-repo koşumda verilmez → alan yazılmaz.
   repo?: string;
+  // R37 (faz 7 T3): multi-eval batch işareti — `--repos` koşumu TEK id üretir ve TÜM per-repo
+  // koşumlara geçirilir (EvalRun payload kökü, `repo` gibi); tek-repo koşumda verilmez → alan
+  // hiç yazılmaz (geriye-uyumlu).
+  multiEvalId?: string;
 }): Promise<EvalSummary> {
   const { tasks, invalid } = loadGoldenTasks(args.repoPath);
   // R22 (faz 4 T3): seed'e randomUUID — aynı repo + aynı golden setten arka arkaya iki koşum
@@ -86,6 +90,7 @@ export async function runEval(args: {
     evalId: summary.evalId, goldenCount: summary.goldenCount, passed, failed, score, invalid,
     perTask: summary.perTask, configSnapshot, ...(comparedTo ? { comparedTo } : {}),
     ...(args.repo ? { repo: args.repo } : {}), // R30 (faz 6 T2): multi-repo hedef repo — payload kökü
+    ...(args.multiEvalId ? { multiEvalId: args.multiEvalId } : {}), // R37 (faz 7 T3): multi-eval batch işareti — payload kökü
   });
   return summary;
 }
