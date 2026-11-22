@@ -1,7 +1,7 @@
 # AI Geliştirme Döngüsü Sistemi — Tasarım Dokümanı (Spec)
 
 - **Tarih:** 2026-11-18
-- **Durum:** v1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 tamamlandı ve main'e merge edildi (5e84614, 296+1skip); Revizyon 6 (faz 6) tasarım onay aşamasında
+- **Durum:** v1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6 tamamlandı ve main'e merge edildi (226d33c, 307+1skip); Revizyon 7 (faz 7) tasarım onay aşamasında
 - **Çalışma adı:** `devloop` *(placeholder — karar kutusu 9.3)*
 - **Ölçek:** Mimari (architectural) — yeni sistem, yeşil alan
 
@@ -555,3 +555,40 @@ Yeni kod yok. SDD içinde ortam denetimi task'ı: `OPENAI_API_KEY` mevcutsa cros
 ### R34 — Bilinçli ertelemeler (faz 7+)
 
 Cross-repo genelleme testi (repo A golden'ı repo B bağlamında — genelleme ölçümü, veri genişletme değil); L3 kapısının birleşik multi-eval goldenCount ile genişletilmesi (ayrı, ölçülmüş karar); R29'un kalan YAGNI/contre kalemleri aynen.
+
+---
+
+## Revizyon 7 — Faz 7: Ölçüm Doğruluğu, Canlı Test Altyapısı ve L3 Kapı Genişletmesi (2026-11-21)
+
+Faz 6 tamamlandı (merge 226d33c, 307+1skip). Faz 7 kapsamı: **B (R35–R39)** — hijyen batch (ölçüm doğruluğu + canlı test altyapısı + kozmetik) + L3 kapı genişletmesi. Hükümler: kapsam B varsayılan onay; **Yaklaşım 1 batch marker + store recompute** hükümlü (yeni event tipi ve store-dışı dosya kanıtı red); sayma filtresi **yalnız mode:production** (policyHash şartı yok — eşik golden veri hacmi hakkındadır); evrim yine **kendi repo'nun golden seti** üzerinde çalışır (multi-eval verisi yalnız aktivasyonu gerekçelendirir); cross-repo genelleme modu R39'a ertelendi.
+
+### R35 — Hijyen batch (ölçüm doğruluğu + kozmetik)
+
+1. **comparedTo cross-repo scope'u:** `evalRunner.ts`'in prevRuns filtresi `payload.repo === args.repo` (ikisi de tanımsız dahil) ile daraltılır — aday koşumu yalnız AYNI reponun en son production koşumuyla karşılaştırılır; farklı repo koşumlarıyla çapraz referans imkânsızlaşır. Tek-repo davranış değişmez (repo tanımsız ↔ tanımsız eşleşir).
+2. **`--repos` boş segment fail-closed:** `"a,,b"` gibi girişte boş segment sessizce düşürülmez — fail-closed hata ('boş repo yolu'). Proje fail-closed ilkesiyle hizalı; trailing-virgül gibi masum desenler de artık açıkça hata verir (kullanıcı girişi doğrulama).
+3. **weightedScore dead-guard temizliği:** `totalTasks === 0 ? 0` dalı kaldırılır (preflight totalTasks > 0 garantisi zorunlu kılar — hüküm yorumu invariant'ı belgeler); davranış değişikliği yok.
+4. **README ifade düzeltmesi:** R32 satırındaki "gerçek Stryker/tsc-in-container" → "gerçek tsc-in-container" (yalnız tsc bacağı koşuldu — parantez içi komut ifşası zaten vardı).
+
+### R36 — Cross-provider canlı gate'li test (R32 gap kapanışı)
+
+`tests/gateway/factory.test.ts`'e flag'li canlı test: `CROSS_PROVIDER_LIVE=1` **VE** gerçek `OPENAI_API_KEY` + `ANTHROPIC_API_KEY` mevcutken koşar (koşullardan biri eksikse skip — skipIf). İçerik: openai bacağı geçersiz model adıyla gerçek API çağrısı yapar (4xx → zincir düşer) → anthropic bacağı gerçek anahtarla gerçek completion döndürür; assertion: gerçek cevap boş değil + usage alanları dolu. Testler offline-kalır (flag + anahtar yokken hiçbir ağ çağrısı imkânsız). R32'nin "gate'li test repo'da yok" gap'i kapanır; anahtarsız ortamda davranış değişmez.
+
+### R37 — L3 kapı genişletmesi (multi-eval verisiyle aktivasyon)
+
+**Problem:** multi-repo eval'in aggregate'i yalnız stdout'a yazılır (store'da yok) ve bir batch'in per-repo EvalRun'ları ortak tanımlayıcı taşımaz — "en son multi-eval'in toplam golden sayısı" store'dan okunamaz. Kapı genişletmesi bu boşluğu kapatır.
+
+- **Batch marker:** `EvalRunSchema`'ya additive optional `multiEvalId?: string` (payload kökü, `repo` gibi). `--repos` koşumu bir `multiEvalId` üretir ve TÜM per-repo `runEval` çağrılarına geçirir; tek-repo koşumda tanımsız (geriye-uyumlu).
+- **Kapı helper'ı (cli.ts lokal, status + evolve paylaşımlı):** `resolveL3(store, ownGoldenCount, policy): { active: boolean; source: 'own' | 'multi-eval' | 'none' }` — aktif EĞER kendi goldenCount ≥ eşik (source 'own') YA DA store'daki `multiEvalId`'li EvalRun'lardan **en son batch'in** (event sırasına göre son görülen multiEvalId) **mode: production** üyelerinin goldenCount toplamı ≥ eşik (source 'multi-eval'). candidate/shadow koşumlar sayılmaz (configSnapshot'ta candidate olanlar dışlanır — mevcut ayrım); policyHash şartı koşulmaz.
+- **evolve kapısı:** I4 eşik-altı kontrolü `resolveL3` üzerinden; eşik-altı JSON mesajı diagnosibilite için iki sayıyı da verir: `L3 eşik altı (l3MinGoldenTasks=N, golden=X, multiEvalTotal=Y)`. Kapı açıldığında evrim yine **kendi repo'nun golden seti** üzerinde çalışır (multi-eval verisi yalnız aktivasyonu gerekçelendirir; own set küçükse evrim kalitesi sınırlıdır — operatör kararı).
+- **status tutarlılığı:** `status.l3Active` aynı `resolveL3`'ü kullanır; tek satırlı çıktıya additive `l3Source=<own|multi-eval|none>` alanı eklenir (daima yazılır — R27 alan kuralı) — kendi goldenCount düşükken l3Active=true gören kullanıcı için kaynağı açıkça gösterir. `EvalSummary.l3Active` DEĞİŞMEZ — o koşumun kendi setinin eşiğe göre durumudur (per-run veri), iki farklı anlama bilinçli izin verilir ve spec'te bu ayrım yazılır.
+- **Geriye-uyumluluk:** `multiEvalId`'siz store'lar yalnız 'own' kaynağıyla değerlenir; davranış bugünküyle aynı.
+
+### R38 — Test stratejisi ve kabul kriterleri (faz 7)
+
+- Mevcut 307+1skip bozulmaz (hüküm notlu güncellemeler hariç). Yeni testler: comparedTo same-repo eşleşmesi + cross-repo izolasyonu; `--repos` boş segment fail-closed; multiEvalId payload yazımı + tek-repo'da tanımsızlık; resolveL3 gruplama (en son batch seçimi, production filtresi, eşik üstü/altı); status l3Active genişlemesi + l3Source alanı (own altında multi-eval ile aktif → l3Source=multi-eval; inaktif → none); evolve eşik-altı mesajının iki sayıyı vermesi; canlı testin skip davranışı (flag/anahtar yokken offline skip kanıtı).
+- **Kabul kriterleri:** `--repos`'suz eval/evolve/status davranışları değişmez (yalnız l3Active değeri genişleyebilir); comparedTo çapraz-repo referans veremez; multi-eval batch'i store'dan yeniden hesaplanabilir; canlı test flag+anahtar yokken skip; README faz 7 bölümü + kabul checklist (R28 formatında); R32 gap'i kapanmış.
+- Kozmetik maddeler davranış-değişmez temizliklerdir (hüküm yorumlu).
+
+### R39 — Bilinçli ertelemeler (faz 8+)
+
+Cross-repo genelleme modu (repo A golden'ı repo B bağlamında — genelleme ölçümü); L3 kapı-source'unun policyHash'e bağlanması (gerekiyorsa); R29'un kalan YAGNI/contre kalemleri aynen (policy-hot-reload, golden otomatik-accept, sandbox LLM spawn genişletmesi, 'yok.' semantic yükseltme, L4/L5).
