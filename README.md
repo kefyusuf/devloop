@@ -554,7 +554,7 @@ kaynaktan (`resolveL3`) okur ve hiçbir aşama insan kararı olmadan üretimi ot
 Operasyonel yürüyüş (her komut `src/shell/cli.ts` buildCli ile teyitli):
 
 1. **`devloop run tasks.json`** — kanıt biriktirir: orchestrator görevleri seçer, review
-   pipeline'ı koşar; `RunStarted`/`PRCreated`/`Finding`/`HumanDecision` vb. kanıtlar
+   pipeline'ı koşar; `RunStarted`/`PRCreated`/`FindingEmitted`/`HumanDecision` vb. kanıtlar
    `.devloop/events.jsonl`'e yazılır, aktif dersler `lessons.md`'e render edilir.
 2. **`devloop learn`** — karar kanıtından aday dersleri üretir ve listeler;
    `devloop learn confirm <lessonId>` aktifleştirir, `devloop learn reject <lessonId>` reddeder.
