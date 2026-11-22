@@ -54,7 +54,7 @@ function lastEvalRun(s: VerdictStore, kind: 'production' | 'shadow'): EvalRunEve
   return filtered[filtered.length - 1];
 }
 
-// R37 (faz 7 T3): en son multi-eval batch'inin PRODUCTION golden toplamı — resolveL3 'ün
+// hüküm: R37 faz 7 T3 — en son multi-eval batch'inin PRODUCTION golden toplamı — resolveL3 'ün
 // 'multi-eval' kaynağı ile evolve eşik-altı bildirimindeki multiEvalTotal sayısı AYNI hesabı
 // paylaşır (tek kaynak; iki tüketici iki farklı toplam bulamaz). Kurallar: multiEvalId TAŞIMAYAN
 // EvalRun'lar sayılmaz (eski store satırları — geriye-uyumlu); EN SON batch kazanır (event
@@ -79,10 +79,16 @@ function latestMultiEvalTotal(s: VerdictStore): number {
 // repo'nun golden setinde çalışır (R37 spec).
 // hüküm: plan 'cli.ts lokal helper' der; export YALNIZ test erişimi içindir (status/evolve dışı
 // tüketim yok — modül-içi kullanım + tests/cli/cli.test.ts).
-export function resolveL3(s: VerdictStore, ownGoldenCount: number, policy: Policy): { active: boolean; source: 'own' | 'multi-eval' | 'none' } {
-  if (ownGoldenCount >= policy.l3MinGoldenTasks) return { active: true, source: 'own' };
-  if (latestMultiEvalTotal(s) >= policy.l3MinGoldenTasks) return { active: true, source: 'multi-eval' };
-  return { active: false, source: 'none' };
+// hüküm: R40 resolveL3 multiEvalTotal alanı — dönüş şeması genişledi: multi-eval/none
+// path'lerinde alan DOLU (tek scan, hesap alana taşınır — evolve eşik-altı bildirimi ayrı
+// latestMultiEvalTotal çağrısı yapmaz, kapalı yolda TEK store scan); own-path erken dönüş
+// scan YOK, alan TANIMSIZ (mevcut hızlı yol korunur — own-path'te gizli store scan'i olmaz).
+// latestMultiEvalTotal modül-private kalır.
+export function resolveL3(s: VerdictStore, ownGoldenCount: number, policy: Policy): { active: boolean; source: 'own' | 'multi-eval' | 'none'; multiEvalTotal?: number } {
+  if (ownGoldenCount >= policy.l3MinGoldenTasks) return { active: true, source: 'own' }; // hüküm: R40 — scan yok, multiEvalTotal tanımsız (hızlı yol)
+  const multiEvalTotal = latestMultiEvalTotal(s); // hüküm: R40 — TEK hesap, iki dönüş yoluna da taşınır (ikinci çağrı yok)
+  if (multiEvalTotal >= policy.l3MinGoldenTasks) return { active: true, source: 'multi-eval', multiEvalTotal };
+  return { active: false, source: 'none', multiEvalTotal };
 }
 
 // R25 (faz 5 T1): decide → GERÇEK run bağlantısı — L3 veri yolu (golden draft acceptedRuns:
@@ -350,6 +356,15 @@ export function buildCli(workDir = process.cwd()): Command {
         const paths = opts.repos.split(',').map((p) => p.trim());
         if (paths.some((p) => p.length === 0)) throw new Error(`boş repo yolu: ${opts.repos}`);
         const repos = paths.map((p) => resolve(p));
+        // R40 (faz 8 T1): duplicate yolu fail-closed — CANONICAL MUTLAK yol üzerinden karşılaştırma
+        // (resolve sonrası; aynı repo farklı yazımla listelenirse de yakalanır — './a' vs 'a' ikisi de
+        // aynı canonical çözüme düşer). Sessiz çift maliyet + çift kanıt (aynı golden seti iki kez
+        // koşum, aggregate'te çift ağırlık) yerine AÇIK hata — R30/R35 preflight ilkesi aynen:
+        // koşum başlamadan TÜM girişler doğrulanır (kısmi koşum/kanıt yok).
+        // hüküm: Windows case-insensitivity (A vs a) bilinçli KAPSAM DIŞI — dosya sistemi katmanında
+        // case-folding gerekirdi; spec R40.3 bu davranışı dokümante eder, talep etmez.
+        const dup = repos.find((p, i) => repos.indexOf(p) !== i);
+        if (dup) throw new Error(`duplicate repo yolu: ${dup}`);
         // Fail-closed preflight — koşum başlamadan TÜM girişler doğrulanır (kısmi koşum/kanıt yok).
         for (const repo of repos) {
           if (!existsSync(repo)) throw new Error(`hedef repo yolu yok: ${repo}`);
@@ -403,9 +418,10 @@ export function buildCli(workDir = process.cwd()): Command {
         const totalTasks = perRepo.reduce((a, s) => a + s.goldenCount, 0);
         const totalPassed = perRepo.reduce((a, s) => a + s.passed, 0);
         const totalFailed = perRepo.reduce((a, s) => a + s.failed, 0);
-        // hüküm: R35 preflight totalTasks>0 garantisi — invariant upstream (golden toplamı 0 girişte
-        // 'hiçbir hedef repoda golden task yok' hatasında düşer; 0-bölen dalı ulaşılmazdı — kozmetik temizlik)
-        const weightedScore = Math.round(perRepo.reduce((a, s) => a + s.score * s.goldenCount, 0) / totalTasks * 10) / 10;
+        // hüküm: R40 savunmacı restore — faz 7 T1 kaldırdı (preflight invariant); koşum-ortası golden
+        // silinmesi (patolojik TOCTOU) NaN üretir, NaN JSON'da null'a düşer — savunma geri geldi;
+        // ulaşılamaz yol → test yazılmaz
+        const weightedScore = totalTasks === 0 ? 0 : Math.round(perRepo.reduce((a, s) => a + s.score * s.goldenCount, 0) / totalTasks * 10) / 10;
         const mergedInvalid = perRepo.flatMap((s) => s.invalid);
         console.log(JSON.stringify({ perRepo, aggregate: { totalTasks, totalPassed, totalFailed, weightedScore, mergedInvalid } }, null, 2));
         return;
@@ -481,10 +497,13 @@ export function buildCli(workDir = process.cwd()): Command {
       // harcamanın kendisini engeller. Kapı açıldığında evrim YİNE KENDİ repo'nun golden setinde
       // çalışır — multi-eval verisi yalnız aktivasyonu gerekçelendirir (R37 spec; ctx.goldenCount
       // küçük kalabilir, operator kararı).
-      const multiEvalTotal = latestMultiEvalTotal(s);
+      // hüküm: R40 — mesajdaki multiEvalTotal resolveL3'ün alanından okunur (kapalı yolda TEK
+      // store scan; ayrı latestMultiEvalTotal çağrısı kaldırıldı — iki tüketici iki farklı toplam
+      // bulamaz sözleşmesi artık TEK hesapla yapısal garantili). ?? 0 savunmacı tipte (own-path
+      // bu yola GİRMEZ — alan orada tanımsız kalır; tip dili bozmamak için opsiyoneldir).
       const l3 = resolveL3(s, ctx.goldenCount, policy);
       if (!l3.active) {
-        console.log(JSON.stringify({ l3Active: false, message: `L3 eşik altı (l3MinGoldenTasks=${policy.l3MinGoldenTasks}, golden=${ctx.goldenCount}, multiEvalTotal=${multiEvalTotal}) — eval koşulmadı` }, null, 2));
+        console.log(JSON.stringify({ l3Active: false, message: `L3 eşik altı (l3MinGoldenTasks=${policy.l3MinGoldenTasks}, golden=${ctx.goldenCount}, multiEvalTotal=${l3.multiEvalTotal ?? 0}) — eval koşulmadı` }, null, 2));
         return;
       }
       const candidates = generateEvolutionCandidates(ctx, baseline);
