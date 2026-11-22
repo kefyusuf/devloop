@@ -571,8 +571,27 @@ describe('Faz 5 değişmezleri (R28)', () => {
 //   ('R31: readGoldenDraftFiles — *.task.json adları, dizin yoksa []').
 // Aşağıdaki değişmez yalnız invariants düzeyinde eksik kalan README hizasıdır — Faz 5 README
 // hizası kalıbı aynen (bölüm/anahtar-kelime pini; bölüm silinir veya isim değişirse test kırılır).
+// Faz 7 referansları (R38 — duplike yok, T1/T2/T3 davranışı kendi testlerinde pinli):
+// (b) L3 kapı genişletmesi → tests/cli/cli.test.ts ('R37: resolveL3 — en son multiEvalId batch\'i,
+//   yalnız production üyeler toplam ≥ eşik → multi-eval' — en son batch seçimi + production
+//   filtresi + eşik üstü/altı gruplaması; "R37: multiEvalId\'siz store yalnız own kaynağıyla
+//   değerlenir (geriye-uyumlu)"; 'R37: status l3Active genişler + l3Source yazılır (multi-eval
+//   ile aktif; kapalıyken none)' — status l3Source; 'R37: evolve eşik-altı mesajı iki sayıyı
+//   verir (multiEvalTotal)') + tests/eval/evalRunner.test.ts ('R37: runEval multiEvalId payload
+//   köküne yazılır' + 'R37: multiEvalId verilmezse payload.multiEvalId tanımsız kalır
+//   (geriye-uyumlu regrezyon pini)' — batch marker payload yazımı/tek-repo tanımsızlık);
+// (c) comparedTo repo-scope → tests/eval/evalRunner.test.ts ('R35: comparedTo yalnız AYNI reponun
+//   en son production koşumuna referans verir', 'R35: repo tanımsız koşumlar yalnız repo tanımsız
+//   production koşumlarla eşleşir' — tek-repo davranış değişmez pini);
+// (d) --repos boş segment fail-closed → tests/cli/cli.test.ts ('R35: --repos boş segment →
+//   fail-closed hata (sessiz düşürme yok)');
+// (e) canlı test skip davranışı → tests/gateway/factory.test.ts ('flag/anahtar yokken skipIf
+//   koşulu true → canlı describe skip eder (gate kapalı)', 'üç koşul birden sağlanınca skipIf
+//   koşulu false → gate açılır (simülasyon; canlı describe koleksiyon anında kararlı, etkilenmez)';
+//   canlı describe kendisi skipIf'li: 'R36: canlı cross-provider fallback (CROSS_PROVIDER_LIVE=1
+//   + gerçek anahtarlar)').
 describe('Faz 6 değişmezleri (R33)', () => {
-  it('README faz 6: multi-repo eval + hijyen batch + canlı doğrulama + kabul checklist dokümante (R30/R31/R32/R33)', () => {
+  it('README faz 6+7: multi-repo eval + hijyen batch + canlı doğrulama + kabul checklist (R30/R31/R32/R33) — faz 7: L3 kapı genişletmesi + comparedTo repo-scope + CROSS_PROVIDER_LIVE + kabul checklist (R35/R36/R37/R38)', () => {
     const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
     expect(readme).toContain('## Faz 6');
     // R30 multi-repo eval: kullanım + aggregate şekli + salt-okunur hedef ilkesi
@@ -588,6 +607,16 @@ describe('Faz 6 değişmezleri (R33)', () => {
     expect(readme).toContain('OPENAI_API_KEY');
     // R33 kabul kanıt haritası
     expect(readme).toContain('Kabul checklist (R33)');
+    // R38 (faz 7 T4): faz 7 README hizası pin'leri — mevcut değişmeze GENİŞLETME (ayrı describe
+    // yok; çok-fazlı README hizası it paketlemesi zaten dosya kalıbı: alt 'README hizası'
+    // describe'ının ilk it'i faz 2+3+4 pin'lerini tek testte taşır) + test sayısı büyümez
+    // (mevcut paket bozulmaz hedefi, R38 kabul (a)).
+    expect(readme).toContain('## Faz 7');
+    expect(readme).toContain('multiEvalId'); // R37 batch marker
+    expect(readme).toContain('resolveL3'); // R37 kapı helper'ı
+    expect(readme).toContain('l3Source'); // R37 status alanı (daima yazılır)
+    expect(readme).toContain('CROSS_PROVIDER_LIVE'); // R36 canlı test bayrağı
+    expect(readme).toContain('Kabul checklist (R38)'); // R38 kabul kanıt haritası
   });
 });
 

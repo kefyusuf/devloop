@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { createGateway, createGateways, createGatewayOrChain, ChainedGateway, altModelFor } from '../../src/gateway/factory.js';
 import { AnthropicGateway, GatewayError } from '../../src/gateway/gateway.js';
 import { OpenAIGateway } from '../../src/gateway/openai.js';
-import { loadConfig } from '../../src/config/config.js';
+import { loadConfig, type Policy } from '../../src/config/config.js';
 
 const policy = loadConfig(process.cwd()).policy;
 const anthropicPolicy = { ...policy, llm: { ...policy.llm, provider: 'anthropic' as const } };
@@ -212,5 +212,70 @@ describe('createGatewayOrChain (R26b)', () => {
     vi.stubEnv('OPENAI_API_KEY', 'k-openai');
     const gateway = createGatewayOrChain(fallbackPolicy);
     expect(gateway).toBeInstanceOf(ChainedGateway);
+  });
+});
+
+// R36 (faz 7 T2, spec R36 — R32 gap kapanışı): cross-provider CANLI gate'li test.
+// ÜÇ koşul birden (CROSS_PROVIDER_LIVE + gerçek OPENAI_API_KEY + gerçek ANTHROPIC_API_KEY)
+// sağlanmadıkça skip — skipIf koşulu koleksiyon anında değerlenir; flag/anahtar yokken canlı
+// describe ağaca hiç alınmaz ve ağ çağrısı imkânsızdır (offline güvenlik yapısal).
+//
+// MALİYET NOTU: openai bacağı geçersiz model adlarıyla 2 adet 4xx alır (başarısız istek
+// ücretsizdir — model bulunamadı, token üretmez) → zincir anthropic ayağına düşer; orada TEK
+// küçük gerçek completion koşar (maxTokens=128 üst sınır + tek satır short-JSON prompt;
+// anthropic yolu policy modeli claude-sonnet-4-5, fallback claude-haiku-3-5). Beklenen maliyet
+// $0.001'in belirgin altında. Bu test FETCH STUB'LAMAZ — gerçek createGateways(policy) + gerçek ağ.
+describe.skipIf(!process.env.CROSS_PROVIDER_LIVE || !process.env.OPENAI_API_KEY || !process.env.ANTHROPIC_API_KEY)
+  ('R36: canlı cross-provider fallback (CROSS_PROVIDER_LIVE=1 + gerçek anahtarlar)', () => {
+  it('openai bacağı geçersiz model → 4xx → anthropic bacağı gerçek completion döndürür', async () => {
+    // hüküm: openai leg'inin GARANTİ düşmesi için openai alt-config'inin İKİ modeli de geçersiz —
+    // OpenAIGateway leg içinde önce openai.model sonra openai.fallbackModel'ı dener (openai.ts
+    // models zinciri); yalnız birincil model geçersiz olsaydı leg gpt-4.1-mini ile anthropic'e
+    // DÜŞMEDEN başarırdı ve canlı test anthropic ayağını kanıtlamazdı. Alan adları config.ts Llm
+    // şemasından: provider / crossProviderFallback / openai.{model, fallbackModel}.
+    const livePolicy: Policy = { ...openaiPolicy, llm: {
+      ...openaiPolicy.llm,
+      provider: 'openai' as const,
+      crossProviderFallback: true,
+      openai: { ...openaiPolicy.llm.openai, model: 'devloop-live-test-gecersiz-model', fallbackModel: 'devloop-live-test-gecersiz-yedek-model' },
+      maxTokens: 128, // anthropic ayağının gerçek çıktısı küçük kalsın (maliyet üst sınırı)
+    } };
+    const gateway = new ChainedGateway(createGateways(livePolicy)); // gerçek ayaklar — stub yok
+    const r = await gateway.complete({
+      system: 'Yalnızca tek bir geçerli JSON nesnesi döndür.',
+      user: 'Cevap olarak {"answer":"ok"} biçiminde tek satır JSON döndür.',
+      schema: Schema, runId: 'r36-live',
+    });
+    expect(r.data.answer.length).toBeGreaterThan(0); // gerçek cevap boş değil
+    expect(r.usage.inputTokens).toBeGreaterThan(0); // usage alanları gerçek API yanıtından dolu
+    expect(r.usage.outputTokens).toBeGreaterThan(0);
+    expect(r.usage.costUsd).toBeGreaterThan(0);
+  });
+});
+
+// R36 pin testi (daima koşar, offline): canlı describe'ın skipIf koşulunu BİREBİR hesaplar ve
+// pin'ler — flag/anahtar yokken skipIf koşulu true (skip) ve gate-open konjonksiyonu false;
+// üçü birden mevcutken tersi. Env değerleri yalnız vi.stubEnv ile simüle edilir (gerçek anahtar
+// değerleri okunmaz/leaklenmez, hiçbir ağ çağrısı yapılmaz; afterEach stub temizliği dosya konvansiyonu).
+// Not: canlı describe'ın skipIf kararı koleksiyon anında sabittir — buradaki stub'lar onu geri getiremez.
+describe('R36 canlı test gate predicate (offline skip pin)', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('flag/anahtar yokken skipIf koşulu true → canlı describe skip eder (gate kapalı)', () => {
+    vi.stubEnv('CROSS_PROVIDER_LIVE', '');
+    vi.stubEnv('OPENAI_API_KEY', '');
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
+    const skipCondition = !process.env.CROSS_PROVIDER_LIVE || !process.env.OPENAI_API_KEY || !process.env.ANTHROPIC_API_KEY;
+    expect(skipCondition).toBe(true); // skipIf(true) → skip
+    expect(Boolean(process.env.CROSS_PROVIDER_LIVE && process.env.OPENAI_API_KEY && process.env.ANTHROPIC_API_KEY)).toBe(false); // gate-open konjonksiyonu false
+  });
+
+  it('üç koşul birden sağlanınca skipIf koşulu false → gate açılır (simülasyon; canlı describe koleksiyon anında kararlı, etkilenmez)', () => {
+    vi.stubEnv('CROSS_PROVIDER_LIVE', '1');
+    vi.stubEnv('OPENAI_API_KEY', 'k-openai');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'k-anthropic');
+    const skipCondition = !process.env.CROSS_PROVIDER_LIVE || !process.env.OPENAI_API_KEY || !process.env.ANTHROPIC_API_KEY;
+    expect(skipCondition).toBe(false); // skipIf(false) → koşar
+    expect(Boolean(process.env.CROSS_PROVIDER_LIVE && process.env.OPENAI_API_KEY && process.env.ANTHROPIC_API_KEY)).toBe(true); // gate-open konjonksiyonu true
   });
 });

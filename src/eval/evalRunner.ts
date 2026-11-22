@@ -41,6 +41,10 @@ export async function runEval(args: {
   // R30 (faz 6 T2): multi-repo eval — hedef repo yolu EvalRun payload KÖKÜNE yazılır
   // (aggregate perRepo alanı payload.repo'dan okunur); tek-repo koşumda verilmez → alan yazılmaz.
   repo?: string;
+  // R37 (faz 7 T3): multi-eval batch işareti — `--repos` koşumu TEK id üretir ve TÜM per-repo
+  // koşumlara geçirilir (EvalRun payload kökü, `repo` gibi); tek-repo koşumda verilmez → alan
+  // hiç yazılmaz (geriye-uyumlu).
+  multiEvalId?: string;
 }): Promise<EvalSummary> {
   const { tasks, invalid } = loadGoldenTasks(args.repoPath);
   // R22 (faz 4 T3): seed'e randomUUID — aynı repo + aynı golden setten arka arkaya iki koşum
@@ -75,13 +79,18 @@ export async function runEval(args: {
   const l3Active = tasks.length >= args.l3MinGoldenTasks;
   // query tip daraltmaz (farklı payload union'ı) — EvalRun payload'una tip guard ile daraltılır
   const prevRuns = args.store.query({ type: 'EvalRun' }).filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun')
-    .filter((e) => !('candidate' in e.payload.configSnapshot));
+    .filter((e) => !('candidate' in e.payload.configSnapshot))
+    // R35 (faz 7 T1): repo-scope — aday koşumu yalnız AYNI reponun en son production koşumuyla
+    // karşılaştırılır (payload.repo optional: tanımsız↔tanımsız eşleşir — tek-repo davranış
+    // değişmez); farklı repo koşumlarıyla çapraz referans imkânsızlaşır.
+    .filter((e) => (e.payload.repo ?? undefined) === (args.repo ?? undefined));
   const comparedTo = args.candidate && prevRuns.length > 0 ? prevRuns[prevRuns.length - 1].payload.evalId : undefined;
   const summary: EvalSummary = { evalId, goldenCount: perTask.length, passed, failed, score, invalid, perTask, configSnapshot, l3Active, ...(comparedTo ? { comparedTo } : {}) };
   await args.store.append('EvalRun', runId, '-', 'eval', {
     evalId: summary.evalId, goldenCount: summary.goldenCount, passed, failed, score, invalid,
     perTask: summary.perTask, configSnapshot, ...(comparedTo ? { comparedTo } : {}),
     ...(args.repo ? { repo: args.repo } : {}), // R30 (faz 6 T2): multi-repo hedef repo — payload kökü
+    ...(args.multiEvalId ? { multiEvalId: args.multiEvalId } : {}), // R37 (faz 7 T3): multi-eval batch işareti — payload kökü
   });
   return summary;
 }

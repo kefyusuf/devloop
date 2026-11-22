@@ -36,6 +36,11 @@ const P = {
     // DEĞİL; aggregate perRepo alanı payload.repo'dan okunur). Additive optional: tek-repo koşumda
     // TANIMSIZ (alan hiç yazılmaz) — geriye-uyumlu, eski store satırları da alanı taşımaz.
     repo: z.string().optional(),
+    // R37 (faz 7 T3): multi-eval batch işareti — AYNI `--repos` koşumunun TÜM per-repo EvalRun'ları
+    // AYNI multiEvalId değerini payload KÖKÜNDE taşır (repo gibi; configSnapshot'a DEĞİL). resolveL3
+    // en son batch'i bu alandan gruplar. Additive optional: tek-repo koşumda yazılmaz — eski store
+    // satırları da taşımaz (geriye-uyumlu; alan yokken resolveL3 yalnız 'own' kaynağıyla değerlenir).
+    multiEvalId: z.string().optional(),
   // R22 (faz 4 T3): çapraz değişken invariant — passed + failed goldenCount ile toplamı eşleşmeli
   // (perTask.length = goldenCount sözleşmesinin şema düzeyinde zorlanması; yazım katı parse, okuma
   // safeParse olduğu için tutarsız eski satırlar da okuma anında elenir).

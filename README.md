@@ -369,7 +369,8 @@ insan-onaylı review'e tabidir (§5.2.2).
 | --- | --- |
 | `goldenCount` | kabul edilmiş golden görev sayısı (`.devloop/golden/`) |
 | `goldenDrafts` | staging taslak sayısı (`.devloop/golden-drafts/`) |
-| `l3Active` | `goldenCount >= l3MinGoldenTasks` — evolve aday üretimi açık mı |
+| `l3Active` | L3 kapısı (faz 7 R37 `resolveL3`): kendi goldenCount ≥ eşik YA DA en son multi-eval batch toplamı ≥ eşik — evolve açık mı |
+| `l3Source` | kapı kaynağı: `own` / `multi-eval` / `none` — daima yazılır (faz 7 R37) |
 | `lastEvalScore` | son production eval skoru (shadow/eval koşumları sayılmaz) |
 
 **L3 aktivasyon yolu:** golden kabul (`devloop golden accept`) ile görev setini `l3MinGoldenTasks`
@@ -451,7 +452,7 @@ perRepo'da açıkça raporlanır — sessiz hariç tutum yok; 1 ondalık yuvarla
 Yeni kod yok; ortam denetimi faz kapanışında raporlandı:
 
 - **5d Docker:** daemon VAR (server 29.9.3) → `DEVLOOP_DOCKER=1 npx vitest run
-  tests/shell/sandbox.test.ts` → **11/11 PASS** — gerçek Stryker/tsc-in-container koşumu
+  tests/shell/sandbox.test.ts` → **11/11 PASS** — gerçek tsc-in-container koşumu
   (dockerizeSpawn ile konteynerde `npx tsc --version`, ~25s) doğrulandı.
 - **5e cross-provider canlı:** **OPENAI_API_KEY yok** + gate'li canlı koşum testi repo'da mevcut
   değil (factory cross-provider testleri offline fetch-stub'lı) → cross-provider canlı doğrulama
@@ -467,6 +468,77 @@ Yeni kod yok; ortam denetimi faz kapanışında raporlandı:
 | ✅ (c) fail-closed girişler | `tests/cli/cli.test.ts` — "R30: --repos var olmayan yol → fail-closed hata" + "R30: golden'ı hiçbir hedef repoda yok → fail-closed hata (boş koşum yok)" |
 | ✅ (d) tek-repo geriye-uyumluluk | `tests/eval/evalRunner.test.ts` — "R30: repo verilmeyen koşumda payload.repo undefined (geriye-uyumlu regrezyon pini)" |
 | ✅ (e) hijyen pin'leri (R31) | `tests/shell/reviewDiff.test.ts` (reDel ws simetri + hunk-içi varyant), `tests/evolution/evolve.test.ts` (prompt-ctx eval- dışlaması), `tests/eval/evalRunner.test.ts` (policyHash key-order), `tests/golden/draft.test.ts` (readGoldenDraftFiles tek kapı) |
+| ✅ (f) tsconfig strict | `npm run typecheck:tests` (`npx tsc -p tsconfig.test.json`) — build-level komut olarak kanılanır (R28e hükmü aynen) |
+
+## Faz 7
+
+### L3 kapı genişletmesi (R37)
+
+Bir repo'nun kendi golden seti `l3MinGoldenTasks` (varsayılan **50**) eşiğinin altında kalabilir;
+store'daki **en son multi-eval batch'inin** production golden toplamı eşiğe ulaşıyorsa evolve yine
+de aktifleşebilir. **Evrim yine KENDİ repo'nun golden setinde çalışır** — multi-eval verisi yalnız
+aktivasyonu gerekçelendirir (own set küçükse evrim kalitesi sınırlıdır; operatör kararı).
+
+- **`multiEvalId` batch işareti:** `devloop eval --repos` koşumu TEK `multiEvalId` üretir ve AYNI
+  koşumun TÜM per-repo `EvalRun` event'leri bu id'yi payload kökünde taşır (`repo` gibi;
+  configSnapshot'a DEĞİL). Additive optional: tek-repo koşumda yazılmaz; eski store satırları da
+  taşımaz — o store'lar yalnız `own` kaynağıyla değerlenir (geriye-uyumlu; `--repos`'suz
+  eval/evolve/status davranışı değişmez).
+- **`resolveL3` kapısı (tek kaynak):** `status` ve `evolve` AYNI kapıyı kullanır. Aktif EĞER kendi
+  goldenCount ≥ eşik (kaynak `own`) YA DA en son multi-eval batch'inin (event sırasındaki son
+  `multiEvalId` değeri — bayat veri kapıyı açamaz: önceki nitelikli batch'ler toplama katılmaz)
+  **yalnız production koşumu üyelerinin** (candidate/shadow dışlanır) goldenCount toplamı ≥ eşik
+  (kaynak `multi-eval`); değilse inaktif (`none`). **policyHash şartı koşulmaz** — eşik golden
+  VERİ hacmi hakkındadır.
+- **`devloop status`:** tek satırlı çıktıya additive **`l3Source=<own|multi-eval|none>`** alanı
+  eklendi (daima yazılır) — `l3Active=true` ama kendi `goldenCount` düşükken kaynağı açıkça
+  gösterir. `evolve` eşik-altı bildirimi de iki sayıyı verir: `L3 eşik altı (l3MinGoldenTasks=N,
+  golden=X, multiEvalTotal=Y)` — shadow eval koşulmaz.
+- **İki `l3Active` anlamı bilinçli ayrıdır:** `EvalSummary.l3Active` DEĞİŞMEDİ — o koşumun KENDİ
+  setinin eşiğe göre durumudur (per-run veri); `status`'taki değer kapı durumudur (own VEYA
+  multi-eval).
+
+### comparedTo repo-scope + hijyen (R35)
+
+- **comparedTo düzeltmesi:** `--candidate` aday koşumu artık yalnız **AYNI reponun** en son
+  production koşumuyla karşılaştırılır (prevRuns `payload.repo` filtresi; tanımsız ↔ tanımsız
+  eşleşir) — cross-repo çapraz referans kapandı; tek-repo davranış değişmez.
+- **`--repos` boş segment fail-closed:** `"a,,b"` ve trailing-virgül gibi girişlerde boş segment
+  sessizce düşürülmez — açık hata (`boş repo yolu`); fail-closed ilkesiyle hizalı kullanıcı girişi
+  doğrulaması. Hata yolunda kanıt yazımı olmaz.
+- **Kozmetik temizlik (davranış-değişmez):** `weightedScore`'daki `totalTasks === 0` dead-guard
+  kaldırıldı (preflight "golden toplamı > 0" garantisini hüküm yorumu invariant'laştırır); R32
+  satırındaki "gerçek Stryker/tsc-in-container" ifadesi "gerçek tsc-in-container" olarak düzeltildi
+  (yalnız tsc bacağı koşuldu — parantez içi komut ifşası zaten vardı).
+
+### Cross-provider canlı test kullanımı (R36)
+
+`tests/gateway/factory.test.ts`'teki canlı test ÜÇ koşul birden sağlanınca koşar:
+`CROSS_PROVIDER_LIVE=1` **VE** gerçek `OPENAI_API_KEY` **VE** gerçek `ANTHROPIC_API_KEY`.
+Koşullardan biri eksikse skip (skipIf koleksiyon anında değerlenir — flag/anahtar yokken canlı
+describe ağaca hiç alınmaz; test paketi offline kalır, ağ çağrısı yapısal olarak imkânsız):
+
+```bash
+CROSS_PROVIDER_LIVE=1 OPENAI_API_KEY=... ANTHROPIC_API_KEY=... \
+  npx vitest run tests/gateway/factory.test.ts
+```
+
+- İçerik: openai bacağı geçersiz model adlarıyla gerçek API çağrısı yapar (4xx → zincir düşer) →
+  anthropic bacağı gerçek anahtarla gerçek completion döndürür; assertion: gerçek cevap boş değil
+  + usage alanları dolu. Test fetch stub'LAMAZ — gerçek ayaklar + gerçek ağ.
+- **Maliyet notu:** başarısız openai 4xx istekleri ücretsizdir (token üretmez); anthropic ayağı
+  tek küçük completion koşar (`maxTokens=128` üst sınır + tek satır JSON prompt) — beklenen maliyet
+  **$0.001'in altında**. Skip'li haliyle günlük `npx vitest run` paketi etkilenmez.
+
+### Kabul checklist (R38)
+
+| Kriter | Kanıt |
+| --- | --- |
+| ✅ (a) mevcut paket bozulmaz (faz 6 kapanışı: 307+1skip) | `npx vitest run` — faz 7 kapanışında **318+2skip / 34 dosya** (+1 skip: R36 flag'li canlı testin bu ortamdaki skip'i) |
+| ✅ (b) L3 kapı genişletmesi (resolveL3 gruplama + status l3Source + evolve mesajı) | `tests/cli/cli.test.ts` — "R37: resolveL3 — en son multiEvalId batch'i, yalnız production üyeler toplam ≥ eşik → multi-eval" (en son batch seçimi + production filtresi + eşik üstü/altı), "R37: status l3Active genişler + l3Source yazılır (multi-eval ile aktif; kapalıyken none)", "R37: evolve eşik-altı mesajı iki sayıyı verir (multiEvalTotal)", "R37: multiEvalId'siz store yalnız own kaynağıyla değerlenir (geriye-uyumlu)"; batch marker: `tests/eval/evalRunner.test.ts` — "R37: runEval multiEvalId payload köküne yazılır" + geriye-uyumlu pin ("R37: multiEvalId verilmezse payload.multiEvalId tanımsız kalır (geriye-uyumlu regrezyon pini)") |
+| ✅ (c) comparedTo repo-scope | `tests/eval/evalRunner.test.ts` — "R35: comparedTo yalnız AYNI reponun en son production koşumuna referans verir" + "R35: repo tanımsız koşumlar yalnız repo tanımsız production koşumlarla eşleşir" (tek-repo davranış değişmez) |
+| ✅ (d) --repos boş segment fail-closed | `tests/cli/cli.test.ts` — "R35: --repos boş segment → fail-closed hata (sessiz düşürme yok)" |
+| ✅ (e) canlı test skip davranışı | `tests/gateway/factory.test.ts` — "flag/anahtar yokken skipIf koşulu true → canlı describe skip eder (gate kapalı)" + "üç koşul birden sağlanınca skipIf koşulu false → gate açılır (simülasyon; canlı describe koleksiyon anında kararlı, etkilenmez)"; canlı describe kendisi: "R36: canlı cross-provider fallback (CROSS_PROVIDER_LIVE=1 + gerçek anahtarlar)" |
 | ✅ (f) tsconfig strict | `npm run typecheck:tests` (`npx tsc -p tsconfig.test.json`) — build-level komut olarak kanılanır (R28e hükmü aynen) |
 
 Detaylı tasarım: `docs/superpowers/specs/2026-11-18-ai-dev-loop-design.md`
