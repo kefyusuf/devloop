@@ -591,7 +591,7 @@ describe('Faz 5 değişmezleri (R28)', () => {
 //   canlı describe kendisi skipIf'li: 'R36: canlı cross-provider fallback (CROSS_PROVIDER_LIVE=1
 //   + gerçek anahtarlar)').
 describe('Faz 6 değişmezleri (R33)', () => {
-  it('README faz 6+7: multi-repo eval + hijyen batch + canlı doğrulama + kabul checklist (R30/R31/R32/R33) — faz 7: L3 kapı genişletmesi + comparedTo repo-scope + CROSS_PROVIDER_LIVE + kabul checklist (R35/R36/R37/R38)', () => {
+  it('README faz 6+7+8: multi-repo eval + hijyen batch + canlı doğrulama + kabul checklist (R30/R31/R32/R33) — faz 7: L3 kapı genişletmesi + comparedTo repo-scope + CROSS_PROVIDER_LIVE + kabul checklist (R35/R36/R37/R38) — faz 8: sistem durumu + kabul checklist (R41/R42)', () => {
     const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
     expect(readme).toContain('## Faz 6');
     // R30 multi-repo eval: kullanım + aggregate şekli + salt-okunur hedef ilkesi
@@ -617,6 +617,22 @@ describe('Faz 6 değişmezleri (R33)', () => {
     expect(readme).toContain('l3Source'); // R37 status alanı (daima yazılır)
     expect(readme).toContain('CROSS_PROVIDER_LIVE'); // R36 canlı test bayrağı
     expect(readme).toContain('Kabul checklist (R38)'); // R38 kabul kanıt haritası
+    // R42 (faz 8 T2): faz 8 README hizası pin'leri — mevcut değişmeze GENİŞLETME, Faz 7 kalıbı
+    // aynen (ayrı describe yok; çok-fazlı README hizası it paketlemesi dosya kalıbı) + test sayısı
+    // büyümez (mevcut paket bozulmaz hedefi, R42 kabul (a); dokümantasyon-yalnız task olduğundan
+    // faz 8 için YENİ davranış testi de yazılmaz — T1 davranış pin'leri kendi testlerinde durur:
+    // tests/cli/cli.test.ts 'R40: --repos duplicate yol → fail-closed hata (çift maliyet/kanıt
+    // yok)', 'R40: resolveL3 multiEvalTotal döndürür — multi-eval/none path\'lerinde dolu,
+    // own-path\'te tanımsız', 'R40: evolve eşik-altı mesajı multiEvalTotal değeri resolveL3 ile
+    // tutarlı'; duplike yok — R33/R38 hüküm kalıbı aynen).
+    // hüküm: pin'ler bölüm/anahtar-kelime düzeyindedir; R41 yürüyüşündeki komut adları yazım
+    // öncesi src/shell/cli.ts buildCli ile teyit edilmiştir (run/status/learn/decide/review-diff/
+    // eval --repos|--candidate|--full/evolve --shadow|--llm/evolve apply/golden draft|list|accept|discard).
+    expect(readme).toContain('## Sistem durumu'); // R41 sistem-durumu bölümü (faz 8 kapanışı)
+    expect(readme).toContain('multiEvalTotal'); // R40 resolveL3 dönüş alanı + evolve eşik-altı bildirimi
+    expect(readme).toContain('duplicate repo yolu'); // R40 duplicate fail-closed mesajı (R40.3)
+    expect(readme).toContain('devloop evolve apply'); // R41 operasyonel yürüyüş 7. adım
+    expect(readme).toContain('Kabul checklist (R42)'); // R42 kabul kanıt haritası
   });
 });
 

@@ -498,6 +498,24 @@ describe('CLI', () => {
     expect(existsSync(join(orch, '.devloop', 'events.jsonl'))).toBe(false);
   });
 
+  // R40 (faz 8 T1): --repos duplicate yol fail-closed — aynı repo iki kez listelenirse sessiz
+  // çift maliyet + çift kanıt (aynı golden seti iki kez koşum) yerine AÇIK hata. R30/R35
+  // fail-closed kalıbı: hata split/trim/resolve doğrulamasında düşer (preflight'tan ÖNCE —
+  // kısmi koşum yok), hata yolunda orchestrator store'una kanıt YAZILMAZ.
+  it('R40: --repos duplicate yol → fail-closed hata (çift maliyet/kanıt yok)', async () => {
+    const orch = mkdtempSync(join(tmpdir(), 'cli-r40dup-'));
+    const a = mkdtempSync(join(tmpdir(), 'cli-r40dupa-'));
+    await expect(buildCli(orch).parseAsync(['node', 'devloop', 'eval', '--repos', `${a},${a}`]))
+      .rejects.toThrow('duplicate repo yolu');
+    // hüküm: canonical mutlak yol üzerinden karşılaştırma — farklı yazım (a vs a/x/..) AYNI
+    // repoya çözünür ve yine yakalanır ('./a' vs 'a' senaryosunun mutlak-yol karşılığı;
+    // resolve() karışık ayraçları da normalize eder — POSIX/Windows ortak yazım)
+    await expect(buildCli(orch).parseAsync(['node', 'devloop', 'eval', '--repos', `${a},${a}/x/..`]))
+      .rejects.toThrow('duplicate repo yolu');
+    // fail-closed: hata yolunda kanıt YAZILMAZ
+    expect(existsSync(join(orch, '.devloop', 'events.jsonl'))).toBe(false);
+  });
+
   // R37 (faz 7 T3): resolveL3 gruplama — L3 kapısı own goldenCount eşiğin ALTINDAYKEN en son
   // multi-eval batch'inin PRODUCTION üyelerinin golden toplamıyla açılabilir. Kurallar:
   // (1) EN SON batch kazanır — event sırasındaki son multiEvalId değerinin batch'i; önceki
@@ -518,7 +536,9 @@ describe('CLI', () => {
     await seedBatchedRun(s1, 2, 'batch-1');
     await seedBatchedRun(s1, 3, 'batch-1');
     await seedBatchedRun(s1, 5, 'batch-2');
-    expect(resolveL3(s1, 0, policy4)).toEqual({ active: true, source: 'multi-eval' });
+    // hüküm: R40 resolveL3 multiEvalTotal alanı — dönüş şeması genişledi (multi-eval/none
+    // path'lerinde alan DOLU: en son batch'in production toplamı; own-path pin'i aynen)
+    expect(resolveL3(s1, 0, policy4)).toEqual({ active: true, source: 'multi-eval', multiEvalTotal: 5 });
     // (en-son-batch kazanır + candidate dışlanır) batch-1 prod toplamı 5 ≥ 4 NİTELİKLİYKEN bile
     // en son batch-2'nin production toplamı = 1 (candidate 10 SAYILMAZ) < 4 → inaktif:
     // batch-1'in toplamı taşınmaz, candidate üye katılmaz — iki kural tek senaryoda çifte kanıt
@@ -527,7 +547,7 @@ describe('CLI', () => {
     await seedBatchedRun(s2, 3, 'batch-1');
     await seedBatchedRun(s2, 1, 'batch-2');
     await seedBatchedRun(s2, 10, 'batch-2', 'aday-label');
-    expect(resolveL3(s2, 0, policy4)).toEqual({ active: false, source: 'none' });
+    expect(resolveL3(s2, 0, policy4)).toEqual({ active: false, source: 'none', multiEvalTotal: 1 }); // hüküm: R40 — alan en son batch-2 production toplamı (candidate 10 dışlanır)
     // (own öncelik) aynı store, own golden=4 ≥ eşik → multi-eval yerine 'own'
     expect(resolveL3(s2, 4, policy4)).toEqual({ active: true, source: 'own' });
   });
@@ -536,7 +556,7 @@ describe('CLI', () => {
     const s = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'cli-r37c-')), '.devloop', 'events.jsonl'));
     // multiEvalId TAŞIMAYAN production EvalRun'lar — eski store satırları multi-eval kaynağı ÜRETMEZ
     await s.append('EvalRun', 'eval-p1', '-', 'eval', { evalId: 'p1', goldenCount: 10, passed: 10, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
-    expect(resolveL3(s, 3, policy4)).toEqual({ active: false, source: 'none' }); // own 3 < 4, multi-eval türetilemez
+    expect(resolveL3(s, 3, policy4)).toEqual({ active: false, source: 'none', multiEvalTotal: 0 }); // own 3 < 4, multi-eval türetilemez (hüküm: R40 — alan 0)
     expect(resolveL3(s, 4, policy4)).toEqual({ active: true, source: 'own' }); // own ≥ eşik → 'own' aynen
   });
 
@@ -617,5 +637,67 @@ describe('CLI', () => {
     expect(r2.l3Active).toBe(false);
     expect(r2.message).toContain('multiEvalTotal=5'); // en son batch-1 production toplamı
     expect(r2.message).toContain('golden=1');
+  });
+
+  // R40 (faz 8 T1): resolveL3 multiEvalTotal dönüş alanı — multi-eval/none path'lerinde DOLU
+  // (tek scan, hesap alana taşınır), own-path'te TANIMSIZ (erken dönüş scan YOK — hızlı yol
+  // korunur; alanın varlığı own-path'te gizli store scan'i olmaz pin'idir).
+  it('R40: resolveL3 multiEvalTotal döndürür — multi-eval/none path\'lerinde dolu, own-path\'te tanımsız', async () => {
+    const policy4: Policy = { ...loadConfig(process.cwd()).policy, l3MinGoldenTasks: 4 };
+    const seedBatchedRun = (s: VerdictStore, goldenCount: number, batchId: string, candidate?: string) =>
+      s.append('EvalRun', `eval-${batchId}-${goldenCount}`, '-', 'eval', {
+        evalId: `${batchId}-${goldenCount}`, goldenCount, passed: goldenCount, failed: 0, score: 100,
+        invalid: [], perTask: [], configSnapshot: candidate ? { candidate } : { mode: 'production' }, multiEvalId: batchId,
+      });
+    // multi-eval aktif store: batch-1 production toplam 2+3=5 ≥ 4 → kaynak 'multi-eval', alan 5
+    const s1 = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'cli-r40m-')), '.devloop', 'events.jsonl'));
+    await seedBatchedRun(s1, 2, 'batch-1');
+    await seedBatchedRun(s1, 3, 'batch-1');
+    const r1 = resolveL3(s1, 0, policy4);
+    expect(r1).toEqual({ active: true, source: 'multi-eval', multiEvalTotal: 5 });
+    // boş store (multiEvalId'li EvalRun YOK) → none path, alan 0 (tanımsız DEĞİL)
+    const s2 = new VerdictStore(join(mkdtempSync(join(tmpdir(), 'cli-r40m2-')), '.devloop', 'events.jsonl'));
+    const r2 = resolveL3(s2, 0, policy4);
+    expect(r2).toEqual({ active: false, source: 'none', multiEvalTotal: 0 });
+    // own-path (own golden 4 ≥ eşik): alan TANIMSIZ — erken dönüş store'u SCANN'lemez
+    const r3 = resolveL3(s2, 4, policy4);
+    expect(r3).toEqual({ active: true, source: 'own' });
+    expect(r3.multiEvalTotal).toBeUndefined();
+  });
+
+  // R40 (faz 8 T1): evolve eşik-altı mesajındaki multiEvalTotal sayısı resolveL3'ün alanıyla
+  // AYNI değer — tek-scan davranışının çıktı-bütünlüğü pin'i (scan sayısı gözlemlenemez;
+  // iki tüketici iki farklı toplam bulamaz sözleşmesi çıktı üzerinden kanıtlanır).
+  // R37 evolve testinin kardeşi: multiEvalTotal > 0 olan store'da mesaj sayısı === alan.
+  it('R40: evolve eşik-altı mesajı multiEvalTotal değeri resolveL3 ile tutarlı', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-r40e-'));
+    mkdirSync(join(dir, '.devloop', 'golden'), { recursive: true });
+    writeFileSync(join(dir, '.devloop', 'golden', 'g1.task.json'), JSON.stringify({
+      goldenId: 'g1',
+      taskSpec: { id: 'gt1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] },
+      fixtureDiff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;',
+      expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
+    }));
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    // baseline ön koşulu: production EvalRun (golden=1 < varsayılan eşik 50 → kapalı yol)
+    await store.append('EvalRun', 'eval-b', '-', 'eval', { evalId: 'b1', goldenCount: 1, passed: 1, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' } });
+    // multi-eval batch: production toplam 3+4=7 (> 0, < 50 → hâlâ eşik altı)
+    await store.append('EvalRun', 'eval-m1', '-', 'eval', { evalId: 'm1', goldenCount: 3, passed: 3, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' }, multiEvalId: 'batch-9' });
+    await store.append('EvalRun', 'eval-m2', '-', 'eval', { evalId: 'm2', goldenCount: 4, passed: 4, failed: 0, score: 100, invalid: [], perTask: [], configSnapshot: { mode: 'production' }, multiEvalId: 'batch-9' });
+    const out: string[] = [];
+    const origLog = console.log; console.log = (m: string) => out.push(m);
+    try {
+      await buildCli(dir).parseAsync(['node', 'devloop', 'evolve', '--shadow']);
+    } finally { console.log = origLog; }
+    const parsed = JSON.parse(out.join('\n')) as { l3Active: boolean; message: string };
+    expect(parsed.l3Active).toBe(false);
+    const match = parsed.message.match(/multiEvalTotal=(\d+)/);
+    expect(match).not.toBeNull();
+    const msgTotal = Number(match![1]);
+    // mesaj sayısı resolveL3'ün alanıyla birebir (aynı store, aynı policy, own golden=1)
+    const l3 = resolveL3(store, 1, loadConfig(dir).policy);
+    expect(l3.active).toBe(false); // kendi: kapalı yol — alan none path'inden gelir
+    expect(msgTotal).toBe(l3.multiEvalTotal);
+    expect(msgTotal).toBe(7); // > 0 şartı: gerçek batch toplamı (0-padding safyazısı değil)
   });
 });

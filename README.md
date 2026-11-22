@@ -541,4 +541,74 @@ CROSS_PROVIDER_LIVE=1 OPENAI_API_KEY=... ANTHROPIC_API_KEY=... \
 | ✅ (e) canlı test skip davranışı | `tests/gateway/factory.test.ts` — "flag/anahtar yokken skipIf koşulu true → canlı describe skip eder (gate kapalı)" + "üç koşul birden sağlanınca skipIf koşulu false → gate açılır (simülasyon; canlı describe koleksiyon anında kararlı, etkilenmez)"; canlı describe kendisi: "R36: canlı cross-provider fallback (CROSS_PROVIDER_LIVE=1 + gerçek anahtarlar)" |
 | ✅ (f) tsconfig strict | `npm run typecheck:tests` (`npx tsc -p tsconfig.test.json`) — build-level komut olarak kanılanır (R28e hükmü aynen) |
 
+## Sistem durumu (faz 8 kapanışı)
+
+Sistem tek bir kapanmış veri yolu üzerinde çalışır: L1'de `run` gerçek koşum kanıtını
+(`.devloop/events.jsonl`) biriktirir; kanıt üzerinden L2'de `learn` aday dersleri üretir ve
+insan onayıyla aktifleştirir; kabul edilen koşum kanıtı `golden` küratörlüğüyle değerlendirme
+setini büyütür; golden veri eşiği geçince L3 `evolve` devreye girer — aday playbook shadow
+eval ile ölçülür ve insan onayıyla staging'e yazılır. Yani döngü **kanıt → ders → evrim**'dir:
+her aşamanın kanıtı aynı store'da toplanır, `status`/`evolve` L3 kapısını tek kaynaktan
+(`resolveL3`) okur — `eval`'in kendi `l3Active` alanı per-run verisidir (kendi seti) — ve
+hiçbir aşama insan kararı olmadan üretimi otomatik kabul etmez.
+
+Operasyonel yürüyüş (her komut `src/shell/cli.ts` buildCli ile teyitli):
+
+1. **`devloop run tasks.json`** — kanıt biriktirir: orchestrator görevleri seçer, review
+   pipeline'ı koşar; `RunStarted`/`PRCreated`/`FindingEmitted`/`HumanDecision` vb. kanıtlar
+   `.devloop/events.jsonl`'e yazılır, aktif dersler `lessons.md`'e render edilir.
+2. **`devloop learn`** — karar kanıtından aday dersleri üretir ve listeler;
+   `devloop learn confirm <lessonId>` aktifleştirir, `devloop learn reject <lessonId>` reddeder.
+3. **`devloop golden draft` → `devloop golden list` → `devloop golden accept <draftId>`**
+   — kabul koşum kanıtından golden taslakları üretir; yalnız `accept` golden setini büyütür
+   (`draft` yalnız `.devloop/golden-drafts/` staging'ine yazar; `discard <draftId>` taslağı atar).
+4. **`devloop status`** — eşik geçilince `l3Active=true` görünür; kaynak açıkça bildirilir:
+   `l3Source=<own|multi-eval|none>` (`own` = kendi golden seti eşiği geçti; `multi-eval` = en son
+   `eval --repos` batch'inin production golden toplamı geçti; `none` = kapı kapalı). Aynı satırda
+   `goldenCount`/`goldenDrafts`/`lastEvalScore` da raporlanır.
+5. **`devloop eval`** — golden seti üzerinde production pipeline skoru (JSON `EvalSummary`;
+   `--candidate <policyDir>` aday policy karşılaştırması, `--full` ensemble dahil koşum).
+6. **`devloop evolve --shadow`** — playbook adaylarını üretir ve aynı golden seti üzerinde
+   shadow eval koşar; kapı kapalıysa eşik-altı bildirimi verir (`l3MinGoldenTasks`, `golden`,
+   `multiEvalTotal`) ve shadow eval koşulmaz. `--llm` ile LLM üretimli mutasyon taslakları da
+   candidate/ dizinine yazılır (anahtarsız fail-closed).
+7. **`devloop evolve apply <evoId>`** — golden-gerileme kapısıyla seçilen adayı playbook
+   staging dizinine (`.devloop/playbooks`) yazar ve `ProposalCreated` kanıtı kaydeder — insan
+   devreye alır; policy/lint otomatik değişmez.
+
+**Multi-repo kısaltması:** birden fazla repo'yu tek yargıcıyla ölçmek için
+`devloop eval --repos ../repoA,../repoB` — çıktı `perRepo[]` + `aggregate` (`weightedScore`
+ağırlıklı toplam). Hedef repolar **salt-okunur**dur: kanıt çalışma dizininin store'unda toplanır,
+hedef `.devloop/`'una yazım olmaz. Girişler fail-closed'dur: var olmayan hedef yol ve hiçbir
+hedefte golden task yok → hata; boş segment (`"a,,b"`, trailing-virgül) → `boş repo yolu` hatası
+(Faz 7); aynı repo'nun iki kez listelenmesi (`a,a` veya `./a` vs `a` — canonical mutlak yol
+üzerinden yakalanır) → `duplicate repo yolu` hatası (Faz 8). Koşum başlamadan TÜM girişler
+doğrulanır; hata yolunda kanıt yazımı olmaz.
+
+**Canlı test kısaltması:** cross-provider fallback canlı testi üç koşul birden sağlanınca koşar —
+`CROSS_PROVIDER_LIVE=1` VE gerçek `OPENAI_API_KEY` VE gerçek `ANTHROPIC_API_KEY`:
+
+```bash
+CROSS_PROVIDER_LIVE=1 OPENAI_API_KEY=... ANTHROPIC_API_KEY=... \
+  npx vitest run tests/gateway/factory.test.ts
+```
+
+İçerik: openai bacağı geçersiz model adlarıyla gerçek API çağrısı yapar (4xx → zincir düşer) →
+anthropic bacağı gerçek anahtarla gerçek completion döndürür. Koşullardan biri eksikse test skip
+eder (skipIf koleksiyon anında değerlenir — test paketi offline kalır).
+
+**Alıntı konvansiyonu (R40.4):** aşağıdaki kanıt sütunundaki test adları runtime formuyla yazılır
+(kaynak dosyada escape karakterleri farklı olabilir).
+
+### Kabul checklist (R42)
+
+| Kriter | Kanıt |
+| --- | --- |
+| ✅ (a) mevcut paket bozulmaz (faz 7 kapanışı: 318+2skip) | `npx vitest run` — faz 8 kapanışında **321+2skip / 34 dosya** (README hizası invariant'ı EXTEND'lenir, test sayısı büyümez — Faz 7 kalıbı; skip sayısı 2 kalır: R36 flag'li canlı test + Docker taban) |
+| ✅ (b) duplicate repo yolu fail-closed | `tests/cli/cli.test.ts` — "R40: --repos duplicate yol → fail-closed hata (çift maliyet/kanıt yok)" (canonical mutlak yol karşılaştırması; boş segment fail-closed Faz 7'den aynen: "R35: --repos boş segment → fail-closed hata (sessiz düşürme yok)") |
+| ✅ (c) resolveL3 multiEvalTotal dönüş alanları | `tests/cli/cli.test.ts` — "R40: resolveL3 multiEvalTotal döndürür — multi-eval/none path'lerinde dolu, own-path'te tanımsız"; mevcut R37 pin'leri hüküm-notlu güncellendi ("R37: resolveL3 — en son multiEvalId batch'i, yalnız production üyeler toplam ≥ eşik → multi-eval") |
+| ✅ (d) evolve kapalı-yol mesajı tek hesapla tutarlı | `tests/cli/cli.test.ts` — "R40: evolve eşik-altı mesajı multiEvalTotal değeri resolveL3 ile tutarlı" (mesaj `l3.multiEvalTotal` alanını okur — iki tüketici iki farklı toplam bulamaz; kapalı yolda tek store scan; scan sayısı gözlemlenebilir değildir, çıktı doğruluğu pin'lenir) |
+| ✅ (e) README sistem-durumu yürüyüşü komutları gerçek işlevlerle eşleşir | `tests/e2e/invariants.test.ts` — "README faz 6+7+8: ..." invariant'ına Faz 8 pin'leri (EXTEND; bölüm silinir veya isim değişirse test kırılır); komut adları yazım öncesi `src/shell/cli.ts` buildCli ile satır-satır teyit edildi |
+| ✅ (f) iki tsc + build temiz | `npx tsc --noEmit` + `npm run typecheck:tests` (`npx tsc -p tsconfig.test.json`) + `npm run build` — faz 8 kapanışında temiz |
+
 Detaylı tasarım: `docs/superpowers/specs/2026-11-18-ai-dev-loop-design.md`
