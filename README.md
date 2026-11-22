@@ -548,8 +548,9 @@ Sistem tek bir kapanmış veri yolu üzerinde çalışır: L1'de `run` gerçek k
 insan onayıyla aktifleştirir; kabul edilen koşum kanıtı `golden` küratörlüğüyle değerlendirme
 setini büyütür; golden veri eşiği geçince L3 `evolve` devreye girer — aday playbook shadow
 eval ile ölçülür ve insan onayıyla staging'e yazılır. Yani döngü **kanıt → ders → evrim**'dir:
-her aşamanın kanıtı aynı store'da toplanır, `status`/`eval`/`evolve` tümü L3 kapısını tek
-kaynaktan (`resolveL3`) okur ve hiçbir aşama insan kararı olmadan üretimi otomatik kabul etmez.
+her aşamanın kanıtı aynı store'da toplanır, `status`/`evolve` L3 kapısını tek kaynaktan
+(`resolveL3`) okur — `eval`'in kendi `l3Active` alanı per-run verisidir (kendi seti) — ve
+hiçbir aşama insan kararı olmadan üretimi otomatik kabul etmez.
 
 Operasyonel yürüyüş (her komut `src/shell/cli.ts` buildCli ile teyitli):
 
