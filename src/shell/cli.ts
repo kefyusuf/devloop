@@ -307,8 +307,13 @@ export function buildCli(workDir = process.cwd()): Command {
       // AYRIK kod yolu: `--repos` yoksa aşağıdaki tek-repo akışı AYNEN çalışır (bugünkü davranış
       // sıfır değişiklik — döngü tek-repo kısayoluyla birleştirilmedi).
       if (opts.repos !== undefined) {
-        const repos = opts.repos.split(',').map((p) => p.trim()).filter((p) => p.length > 0).map((p) => resolve(p));
-        if (repos.length === 0) throw new Error('--repos boş: en az bir hedef repo yolu gerekli');
+        // R35 (faz 7 T1): fail-closed — boş segment sessizce düşürülMEZ ('a,,b' ve trailing-virgül
+        // gibi masum desenler de açıkça hata verir; kullanıcı girişi doğrulama ilkesi). Hüküm: eski
+        // `repos.length === 0` guard'ı bu kontrolle erişilmez olduğundan kaldırıldı ('' ve ','
+        // girişi artık 'boş repo yolu' olarak düşer — split her zaman ≥1 segment üretir).
+        const paths = opts.repos.split(',').map((p) => p.trim());
+        if (paths.some((p) => p.length === 0)) throw new Error(`boş repo yolu: ${opts.repos}`);
+        const repos = paths.map((p) => resolve(p));
         // Fail-closed preflight — koşum başlamadan TÜM girişler doğrulanır (kısmi koşum/kanıt yok).
         for (const repo of repos) {
           if (!existsSync(repo)) throw new Error(`hedef repo yolu yok: ${repo}`);
@@ -357,7 +362,9 @@ export function buildCli(workDir = process.cwd()): Command {
         const totalTasks = perRepo.reduce((a, s) => a + s.goldenCount, 0);
         const totalPassed = perRepo.reduce((a, s) => a + s.passed, 0);
         const totalFailed = perRepo.reduce((a, s) => a + s.failed, 0);
-        const weightedScore = totalTasks === 0 ? 0 : Math.round(perRepo.reduce((a, s) => a + s.score * s.goldenCount, 0) / totalTasks * 10) / 10;
+        // hüküm: R35 preflight totalTasks>0 garantisi — invariant upstream (golden toplamı 0 girişte
+        // 'hiçbir hedef repoda golden task yok' hatasında düşer; 0-bölen dalı ulaşılmazdı — kozmetik temizlik)
+        const weightedScore = Math.round(perRepo.reduce((a, s) => a + s.score * s.goldenCount, 0) / totalTasks * 10) / 10;
         const mergedInvalid = perRepo.flatMap((s) => s.invalid);
         console.log(JSON.stringify({ perRepo, aggregate: { totalTasks, totalPassed, totalFailed, weightedScore, mergedInvalid } }, null, 2));
         return;

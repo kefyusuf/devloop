@@ -167,4 +167,29 @@ describe('runEval', () => {
     // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
     expect(queryTyped(store, { type: 'EvalRun' })[0].payload.repo).toBeUndefined();
   });
+
+  // R35 (faz 7 T1): comparedTo cross-repo scope — aday koşumu yalnız AYNI reponun EN SON
+  // production koşumuyla karşılaştırılır (prevRuns filtresi payload.repo ile daraltılır;
+  // tanımsız↔tanımsız eşleşir). Filtresiz davranışta B (son koşum) referans verilirdi —
+  // farklı reponun skoruyla çapraz karşılaştırma ölçüm hatasıdır.
+  it('R35: comparedTo yalnız AYNI reponun en son production koşumuna referans verir', async () => {
+    const dir = makeRepo([GOLDEN]);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const common = { repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks };
+    const runA = await runEval({ ...common, repo: 'A' }); // repo A production koşumu (ÖNCE)
+    const runB = await runEval({ ...common, repo: 'B' }); // repo B production koşumu (SONRA — filtresiz son koşum)
+    const candidate = await runEval({ ...common, repo: 'A', candidate: { label: 'aday' } });
+    expect(candidate.comparedTo).toBe(runA.evalId); // A'nın evalId'si — B'nin DEĞİL
+    expect(runA.evalId).not.toBe(runB.evalId); // önkoşul: evalId'ler gerçekten ayrışıyor (test boşa koşmuyor)
+  });
+  it('R35: repo tanımsız koşumlar yalnız repo tanımsız production koşumlarla eşleşir', async () => {
+    const dir = makeRepo([GOLDEN]);
+    const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
+    const common = { repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks };
+    const plain = await runEval(common); // repo TANIMSIZ production koşumu (ÖNCE)
+    const runX = await runEval({ ...common, repo: 'X' }); // repo'lu production koşumu (SONRA — filtresiz son koşum)
+    const candidate = await runEval({ ...common, candidate: { label: 'aday' } }); // repo yok (tanımsız)
+    expect(candidate.comparedTo).toBe(plain.evalId); // tanımsız koşumun evalId'si — X'in DEĞİL
+    expect(plain.evalId).not.toBe(runX.evalId); // önkoşul: evalId'ler gerçekten ayrışıyor (test boşa koşmuyor)
+  });
 });

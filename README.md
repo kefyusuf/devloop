@@ -451,7 +451,7 @@ perRepo'da açıkça raporlanır — sessiz hariç tutum yok; 1 ondalık yuvarla
 Yeni kod yok; ortam denetimi faz kapanışında raporlandı:
 
 - **5d Docker:** daemon VAR (server 29.9.3) → `DEVLOOP_DOCKER=1 npx vitest run
-  tests/shell/sandbox.test.ts` → **11/11 PASS** — gerçek Stryker/tsc-in-container koşumu
+  tests/shell/sandbox.test.ts` → **11/11 PASS** — gerçek tsc-in-container koşumu
   (dockerizeSpawn ile konteynerde `npx tsc --version`, ~25s) doğrulandı.
 - **5e cross-provider canlı:** **OPENAI_API_KEY yok** + gate'li canlı koşum testi repo'da mevcut
   değil (factory cross-provider testleri offline fetch-stub'lı) → cross-provider canlı doğrulama

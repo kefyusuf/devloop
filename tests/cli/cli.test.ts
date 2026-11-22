@@ -481,4 +481,18 @@ describe('CLI', () => {
       .rejects.toThrow('hiçbir hedef repoda golden task yok');
     expect(existsSync(join(orch, '.devloop', 'events.jsonl'))).toBe(false);
   });
+
+  // R35 (faz 7 T1): --repos boş segment fail-closed — "a,,b" girişte boş segment sessizce
+  // düşürülMEZ (filtre yok); fail-closed hata ('boş repo yolu'). Trailing-virgül gibi masum
+  // desenler de artık açıkça hata verir. Geçerli segmentler gerçek dizin — hata split/trim
+  // doğrulamasında, resolve/existsSync/golden yüklemesinden ÖNCE düşer (kısmi koşum yok).
+  it('R35: --repos boş segment → fail-closed hata (sessiz düşürme yok)', async () => {
+    const orch = mkdtempSync(join(tmpdir(), 'cli-r35-'));
+    const a = mkdtempSync(join(tmpdir(), 'cli-r35a-'));
+    const b = mkdtempSync(join(tmpdir(), 'cli-r35b-'));
+    await expect(buildCli(orch).parseAsync(['node', 'devloop', 'eval', '--repos', `${a},,${b}`]))
+      .rejects.toThrow('boş repo yolu');
+    // fail-closed: hata yolunda kanıt YAZILMAZ
+    expect(existsSync(join(orch, '.devloop', 'events.jsonl'))).toBe(false);
+  });
 });

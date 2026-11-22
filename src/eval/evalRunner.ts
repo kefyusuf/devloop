@@ -75,7 +75,11 @@ export async function runEval(args: {
   const l3Active = tasks.length >= args.l3MinGoldenTasks;
   // query tip daraltmaz (farklı payload union'ı) — EvalRun payload'una tip guard ile daraltılır
   const prevRuns = args.store.query({ type: 'EvalRun' }).filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun')
-    .filter((e) => !('candidate' in e.payload.configSnapshot));
+    .filter((e) => !('candidate' in e.payload.configSnapshot))
+    // R35 (faz 7 T1): repo-scope — aday koşumu yalnız AYNI reponun en son production koşumuyla
+    // karşılaştırılır (payload.repo optional: tanımsız↔tanımsız eşleşir — tek-repo davranış
+    // değişmez); farklı repo koşumlarıyla çapraz referans imkânsızlaşır.
+    .filter((e) => (e.payload.repo ?? undefined) === (args.repo ?? undefined));
   const comparedTo = args.candidate && prevRuns.length > 0 ? prevRuns[prevRuns.length - 1].payload.evalId : undefined;
   const summary: EvalSummary = { evalId, goldenCount: perTask.length, passed, failed, score, invalid, perTask, configSnapshot, l3Active, ...(comparedTo ? { comparedTo } : {}) };
   await args.store.append('EvalRun', runId, '-', 'eval', {
