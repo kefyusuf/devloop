@@ -1,7 +1,7 @@
 # AI Geliştirme Döngüsü Sistemi — Tasarım Dokümanı (Spec)
 
 - **Tarih:** 2026-11-18
-- **Durum:** v1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6 tamamlandı ve main'e merge edildi (226d33c, 307+1skip); Revizyon 7 (faz 7) tasarım onay aşamasında
+- **Durum:** v1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6 + Faz 7 tamamlandı ve main'e merge edildi (562e34e, 318+2skip); Revizyon 8 (faz 8 — kapanış) tasarım onay aşamasında
 - **Çalışma adı:** `devloop` *(placeholder — karar kutusu 9.3)*
 - **Ölçek:** Mimari (architectural) — yeni sistem, yeşil alan
 
@@ -592,3 +592,29 @@ Faz 6 tamamlandı (merge 226d33c, 307+1skip). Faz 7 kapsamı: **B (R35–R39)** 
 ### R39 — Bilinçli ertelemeler (faz 8+)
 
 Cross-repo genelleme modu (repo A golden'ı repo B bağlamında — genelleme ölçümü); L3 kapı-source'unun policyHash'e bağlanması (gerekiyorsa); R29'un kalan YAGNI/contre kalemleri aynen (policy-hot-reload, golden otomatik-accept, sandbox LLM spawn genişletmesi, 'yok.' semantic yükseltme, L4/L5).
+
+---
+
+## Revizyon 8 — Faz 8: Kapanış — Hijyen Batch ve Sistem Durumu Dokümantasyonu (2026-11-22)
+
+Faz 7 tamamlandı (merge 562e34e, 318+2skip). Faz 8 kapsamı: **A — kapanış (R40–R43)**: taşınan hijyen minor'larının kapatılması + sistem-durumu dokümantasyonu. Hükümler: kapsamın A olduğu varsayılan onay (özellik backlog'u fiilen tükendi — kalan büyük kalemler kullanım verisiyle değerlenecek şekilde R43'te ertelenir); duplicate repo yolu **fail-closed** hükümlü (sessiz dedupe değil); NaN restore **savunmacı ve ulaşılamaz** — yeni test yazılmaz (boşa düşer), mevcut R30 pin'leri normal yolu korur.
+
+### R40 — Hijyen batch (kod + konvansiyon)
+
+1. **resolveL3 `multiEvalTotal`:** dönüş şeması `{ active, source, multiEvalTotal?: number }` — alan yalnız hesaplandığında yazılır: own-path erken döner (scan yok, alan tanımsız — mevcut hızlı yol korunur); multi-eval/none path'lerinde scan yapılır → alan dolu. Evolve kapalı yolu ayrı `latestMultiEvalTotal` çağrısını kaldırır, mesaj `l3.multiEvalTotal`'ı kullanır → kapalı yolda tek store scan; açık yol mesaj yazmaz (alan orada gereksiz). `latestMultiEvalTotal` modül-private kalır. **Bilinen test etkisi:** faz 7 T3'ün resolveL3 dönüş-şekli pin'leri toEqual ise multi-eval/none path'lerinde hüküm-notlu güncellenir; own-path pin'i aynen.
+2. **weightedScore NaN savunmacı restore:** `totalTasks === 0 ? 0 : ...` dalı hüküm yorumuyla geri gelir — preflight invariant normal akışı korur, ama koşum-ortası tüm golden'ların silinmesi (patolojik TOCTOU) NaN üretir ve NaN JSON'da null'a düşer; savunma restore edilir. Ulaşılamaz yol — yeni test YAZILMAZ (boşa düşer); mevcut R30 aggregate pin'leri normal yolu koruyucu.
+3. **`--repos` duplicate yolu fail-closed:** split → trim → boş kontrol → resolve → duplicate kontrol (Set, canonical mutlak yol üzerinden; aynı göreli yol farklı yazımla da yakalanır — `./a` vs `a`) → ilk duplicate'te `throw new Error('duplicate repo yolu: X')`. Windows case-insensitivity bilinçli kapsam dışı (dokümante). Proje fail-closed ilkesi: sessiz çift maliyet + çift kanıt yerine açık hata.
+4. **Konvansiyon düzeltmeleri:** cli.ts helper-split gerekçe yorumunun prefix'i `hüküm:` standardına çekilir (davranış yok); README'ye tek satırlık alıntı notu — "test adları runtime formuyla yazılır (kaynak dosyada escape karakterleri farklı olabilir)".
+
+### R41 — README "Sistem durumu" bölümü (dokümantasyon-yalnız)
+
+`## Sistem durumu (faz 8 kapanışı)` bölümü: L1→L3 döngü özeti (kanıt → ders → evrim); operasyonel yürüyüş — (1) `devloop run` kanıt biriktirir, (2) `devloop learn` dersleri üretir/listeler, (3) `devloop golden draft/list/accept` golden seti büyütür, (4) eşik geçilince `devloop status` `l3Active=true` (kaynak `l3Source`), (5) `devloop eval` skorlar, (6) `devloop evolve --shadow` aday üretir, (7) `devloop evolve apply <evoId>` playbook staging'e yazar; multi-repo (`eval --repos`) ve canlı test (`CROSS_PROVIDER_LIVE=1`) kullanım kısaltmaları; alıntı konvansiyon notu (R40.4). Yeni kod yok — dokümantasyon task'ıdır.
+
+### R42 — Test stratejisi ve kabul kriterleri (faz 8)
+
+- Mevcut 318 passed bozulmaz; skip sayısı 2 kalır (R36 flag'li canlı test + Docker taban). Yeni testler: duplicate repo yolu fail-closed (`eval --repos a,a` → hata, kanıt yazımı yok); resolveL3 multiEvalTotal dönüş alanları (multi-eval/none path'lerinde yazılır, own-path'te tanımsız — mevcut pin'ler hüküm-notlu güncellenir); evolve kapalı-yol mesajının `l3.multiEvalTotal` ile aynı değeri vermesi (tek-scan davranışı sonucun bütünlüğüyle kanıtlanır — scan sayısı gözlemlenebilir değildir, çıktı doğruluğu pin'lenir).
+- **Kabul kriterleri:** `devloop status/eval/evolve` davranışları yalnız hükümlü maddelerde değişir; duplicate/boş-segment girişleri fail-closed; README sistem-durumu bölümü operasyonel yürüyüşü içerir ve komutları gerçek işlevlerle eşleşir; kabul checklist (R42) R28 formatında; iki tsc + build temiz.
+
+### R43 — Bilinçli ertelemeler (faz 9+)
+
+Cross-repo genelleme modu (kullanım verisi birikince değerlenir); L3-source policyHash bağlantısı (R37 hükmü bilinçli red — kalsın); R29/R39'un kalan kalemleri aynen (policy-hot-reload, golden otomatik-accept, sandbox LLM spawn genişletmesi, 'yok.' semantic yükseltme, L4/L5 — uzak hedef); operasyonel kullanım oturumları kod-fazı değil, kullanıcı-yanında yürütülen kullanım çalışmalarıdır.
