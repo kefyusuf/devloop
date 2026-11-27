@@ -28,7 +28,7 @@ describe('CLI', () => {
     // ['node', 'devloop', ...] + from:'user' → "unknown command 'node'" (kanıt: task-13-report.md).
     // from:'node' (varsayılan) argv[0..1]'i kırpar — üretimdeki parseAsync(process.argv) ile aynı kural.
     await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--run', 'r1', '--reject', '--reason', 'false-positive', '--findings', 'f1', '--note', 'yanlış alarm']);
-    const d = store.query({ type: 'HumanDecision' });
+    const d = store.events({ type: 'HumanDecision' });
     expect(d[0].payload).toMatchObject({ decision: 'reject', reason: 'false-positive' });
     expect(d[0].run_id).toBe('r1'); // --run override: aynen kullanılır (auto-resolve atlanır)
   });
@@ -44,14 +44,14 @@ describe('CLI', () => {
     await store.append('RunStarted', 'r1', '-', 'o', { configSnapshot: {} });
     await store.append('TaskPicked', 'r1', 't1', 'orchestrator', { taskSpec });
     await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']);
-    const d = store.query({ type: 'HumanDecision' });
+    const d = store.events({ type: 'HumanDecision' });
     expect(d[0].run_id).toBe('r1');
     // son TaskPicked: aynı taskSpec id'li YENİ bir koşum (r2) sonradan yazıldı → auto-resolve EN
     // YENİ eşleşmeyi seçer (iki koşum r1 ve r2 — '.pop()' dosya sırasındaki son kayıt)
     await store.append('RunStarted', 'r2', '-', 'o', { configSnapshot: {} });
     await store.append('TaskPicked', 'r2', 't1', 'orchestrator', { taskSpec });
     await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']);
-    const d2 = store.query({ type: 'HumanDecision' });
+    const d2 = store.events({ type: 'HumanDecision' });
     expect(d2).toHaveLength(2);
     expect(d2[1].run_id).toBe('r2');
     expect(d2[1].payload).toMatchObject({ decision: 'accept', reason: 'real-issue-accepted' });
@@ -63,7 +63,7 @@ describe('CLI', () => {
     await store.append('TaskPicked', 'r1', 't1', 'orchestrator', { taskSpec: { id: 't1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] } });
     // eşleşen TaskPicked VAR (auto-resolve 'r1' verirdi) — --run r9 AYNEN kullanılır
     await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--run', 'r9', '--reject', '--reason', 'fixed-later']);
-    const d = store.query({ type: 'HumanDecision' });
+    const d = store.events({ type: 'HumanDecision' });
     expect(d[0].run_id).toBe('r9');
     expect(d[0].task_id).toBe('t1');
   });
@@ -73,13 +73,13 @@ describe('CLI', () => {
     await expect(buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']))
       .rejects.toThrow('koşum bulunamadı');
     // fail-closed: sessiz 'manual' yazımı YOK — store'a HumanDecision YAZILMAZ
-    expect(store.query({ type: 'HumanDecision' })).toHaveLength(0);
+    expect(store.events({ type: 'HumanDecision' })).toHaveLength(0);
   });
   it('decide: --run manual → run_id manual (explicit)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cli-r25m-'));
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     await buildCli(dir).parseAsync(['node', 'devloop', 'decide', '--task', 't1', '--run', 'manual', '--reject', '--reason', 'stale-lesson']);
-    const d = store.query({ type: 'HumanDecision' });
+    const d = store.events({ type: 'HumanDecision' });
     expect(d[0].run_id).toBe('manual');
     expect(d[0].payload).toMatchObject({ decision: 'reject', reason: 'stale-lesson' });
   });
@@ -255,10 +255,10 @@ describe('CLI', () => {
     expect(parsed.message).toContain('golden=1');
     expect(parsed.message).toContain('eval koşulmadı');
     // wasted eval yok: candidate etiketli EvalRun YAZILMADI — store'da yalnız seed edilen üretim koşumu var
-    const candidateRuns = store.query({ type: 'EvalRun' })
+    const candidateRuns = store.events({ type: 'EvalRun' })
       .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun' && 'candidate' in e.payload.configSnapshot);
     expect(candidateRuns).toHaveLength(0);
-    expect(store.query({ type: 'EvalRun' })).toHaveLength(1);
+    expect(store.events({ type: 'EvalRun' })).toHaveLength(1);
   });
 
   it('evolve --shadow: çıktı JSON parse edilebilir; shadowEval candidate=evolve-shadow; baseline production evalId', async () => {
@@ -332,7 +332,7 @@ describe('CLI', () => {
     await expect(buildCli(dir).parseAsync(['node', 'devloop', 'evolve', 'apply', 'evo-cli1']))
       .rejects.toThrow('golden gerileme (g2)');
     expect(existsSync(join(dir, '.devloop', 'playbooks', 'evo-cli1.json'))).toBe(false);
-    expect(store.query({ type: 'ProposalCreated' })).toHaveLength(0);
+    expect(store.events({ type: 'ProposalCreated' })).toHaveLength(0);
   });
 
   it('evolve apply: gerileme yok → ProposalCreated + playbook staging dosyası', async () => {
@@ -350,7 +350,7 @@ describe('CLI', () => {
       console.log = origLog;
     }
     expect(out.join('\n')).toContain('evo-cli2');
-    expect(store.query({ type: 'ProposalCreated' })).toHaveLength(1);
+    expect(store.events({ type: 'ProposalCreated' })).toHaveLength(1);
     expect(existsSync(join(dir, '.devloop', 'playbooks', 'evo-cli2.json'))).toBe(true);
   });
 

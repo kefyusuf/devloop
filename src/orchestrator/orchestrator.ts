@@ -96,7 +96,7 @@ export class Orchestrator {
   async run(tasksFile: string): Promise<RunSummary> {
     const { store, policy, repoPath } = this.deps;
     const startedAt = Date.now();
-    const prevRuns = store.query({ type: 'RunStarted' });
+    const prevRuns = store.events({ type: 'RunStarted' });
     const lastRun = prevRuns.length > 0 ? prevRuns[prevRuns.length - 1] : null;
     const runId = lastRun ? lastRun.run_id : randomUUID();
     // hüküm: R31 policyHash canonicalJson seed — hash DEĞERLERİ değişimi bilinçli (policy
@@ -131,7 +131,7 @@ export class Orchestrator {
     // .git/info/exclude'una yazılır (kullanıcının .gitignore'una dokunulmaz); koşum başına bir kez.
     this.ensureDevloopExcluded(repoPath);
 
-    const done = new Set([...store.query({ type: 'PRCreated' }), ...store.query({ type: 'TaskBlocked' })].map((e) => e.task_id));
+    const done = new Set([...store.events({ type: 'PRCreated' }), ...store.events({ type: 'TaskBlocked' })].map((e) => e.task_id));
     const tasks = (JSON.parse(readFileSync(tasksFile, 'utf8')) as unknown[]).map((t) => TaskSpecSchema.parse(t));
     const abort = async (reason: 'budget' | 'wallclock' | 'kill', taskId: string) => {
       await store.append('RunAborted', runId, taskId, 'orchestrator', { reason });
@@ -205,7 +205,7 @@ export class Orchestrator {
   /** Gate enforcement gövdesi (A2): her tur pipeline → fail ise feedback → sonraki tur. Tükenirse TaskBlocked, PR yok. */
   private async executeTask(task: TaskSpec, wt: string, runId: string, summary: RunSummary): Promise<void> {
     const { store, policy } = this.deps;
-    const taskEventId = store.query({ runId, taskId: task.id, type: 'TaskPicked' }).pop()!.event_id;
+    const taskEventId = store.events({ runId, taskId: task.id, type: 'TaskPicked' }).pop()!.event_id;
     let feedback: Finding[] = [];
     let lastResult: PipelineResult | null = null;
     let artEventId: string | null = null;

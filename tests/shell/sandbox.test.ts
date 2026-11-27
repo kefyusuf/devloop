@@ -144,7 +144,7 @@ describe('Orchestrator docker sandbox aktivasyonu (R13)', () => {
     expect(aborted).toHaveLength(1);
     expect(aborted[0].payload.reason).toBe('panic');
     expect(aborted[0].task_id).toBe('-'); // run-level abort — görev-topu değil
-    expect(store.query({ type: 'TaskPicked' })).toHaveLength(0); // görev işlenmeden dur
+    expect(store.events({ type: 'TaskPicked' })).toHaveLength(0); // görev işlenmeden dur
   });
 
   it('docker modu + Docker kullanılabilir (probe true) → koşum normal ilerler (yanlış-abort yok)', async () => {
@@ -155,7 +155,7 @@ describe('Orchestrator docker sandbox aktivasyonu (R13)', () => {
       .run(tasksFile(repo, [task('t1')]));
     expect(summary.aborted).toBeUndefined();
     expect(summary.prs).toHaveLength(1);
-    expect(store.query({ type: 'RunAborted' })).toHaveLength(0);
+    expect(store.events({ type: 'RunAborted' })).toHaveLength(0);
     expect(backend.generate).toHaveBeenCalledTimes(1);
   });
 

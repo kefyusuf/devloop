@@ -93,7 +93,7 @@ describe('generateEvolutionCandidates (L3 — R10)', () => {
     expect(out1[0].sourceEvalId).toBe('base-eval');
     expect(out1[0].evoId).toBe(out2[0].evoId); // deterministik: iki çağrı aynı ID
     // provenance (faz 2 review Minor #2 kalıntısı): karar event ID'leri content'te taşınır
-    const decisionIds = ctx.store.query({ type: 'HumanDecision' }).map((e) => e.event_id).sort();
+    const decisionIds = ctx.store.events({ type: 'HumanDecision' }).map((e) => e.event_id).sort();
     expect(out1[0].content.sourceDecisionIds).toEqual(decisionIds);
   });
 
@@ -178,7 +178,7 @@ describe('applyEvolution (A5 — yalnız playbook staging + event)', () => {
     await expect(applyEvolution(ctx, candidate, shadow, baseline))
       .rejects.toThrow('golden gerileme (g2)');
     expect(existsSync(join(ctx.playbookDir, 'evo-abc.json'))).toBe(false); // kapı throw'dan ÖNCE — yazım yok
-    expect(ctx.store.query({ type: 'ProposalCreated' })).toHaveLength(0);
+    expect(ctx.store.events({ type: 'ProposalCreated' })).toHaveLength(0);
   });
 
   // I1 (spec R10 binding): karma değişim — aggregate failed AZALIRken (1→0) bir görev geriliyor.
@@ -192,7 +192,7 @@ describe('applyEvolution (A5 — yalnız playbook staging + event)', () => {
     await expect(applyEvolution(ctx, candidate, shadow, baseline))
       .rejects.toThrow('golden gerileme (g2)'); // gerileme listesinde yalnız g2 — g1 iyileşme sayılmaz
     expect(existsSync(join(ctx.playbookDir, 'evo-abc.json'))).toBe(false);
-    expect(ctx.store.query({ type: 'ProposalCreated' })).toHaveLength(0);
+    expect(ctx.store.events({ type: 'ProposalCreated' })).toHaveLength(0);
   });
 
   // I1: baseline'da GÖRÜNMEYEN (yeni) golden görev shadow'da fail → o da gerilemedir

@@ -37,7 +37,7 @@ export interface EvolveContext {
 // etiketli olmayan production eval koşumlarını da kapsar (test-diff sayımı + karar bucket'ları +
 // R31: prompt bağlamı — R26g'nin kapsam dışı bıraktığı yüzey).
 function signalExcludedFor(store: VerdictStore): (runId: string) => boolean {
-  const shadowRunIds = new Set(store.query({ type: 'EvalRun' })
+  const shadowRunIds = new Set(store.events({ type: 'EvalRun' })
     .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun' && 'candidate' in e.payload.configSnapshot)
     .map((e) => e.run_id));
   return (runId: string): boolean => shadowRunIds.has(runId) || runId.startsWith('eval-');
@@ -53,8 +53,8 @@ export function generateEvolutionCandidates(ctx: EvolveContext, baseline: EvalSu
   // shadow koşumda HumanDecision oluşmaz ama invariant açık ve geleceğe hazır olsun.
   // R31 (faz 6 T1): predicate modül düzeyindeki signalExcludedFor'dan (eval- dâhil, tek kaynak).
   const signalExcluded = signalExcludedFor(ctx.store);
-  const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !signalExcluded(e.run_id));
-  const findings = ctx.store.query({ type: 'FindingEmitted' })
+  const decisions = ctx.store.events({ type: 'HumanDecision' }).filter((e) => !signalExcluded(e.run_id));
+  const findings = ctx.store.events({ type: 'FindingEmitted' })
     .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted') // union daraltma (strict tsc — learn.ts ile aynı desen)
     .filter((e) => !signalExcluded(e.run_id));
   const byFinding = new Map<string, string>(findings.map((e): [string, string] => [e.event_id, e.payload.finding.category]));
@@ -150,11 +150,11 @@ export async function generateLlmMutations(args: {
   // filtresi signalExcludedFor üzerinden — shadow/eval- koşum bulguları VE kararları LLM prompt
   // satırlarına sızmaz (R26g'nin prompt yüzeyinde bıraktığı boşluk; duplicate mantık yok).
   const signalExcluded = signalExcludedFor(ctx.store);
-  const findings = ctx.store.query({ type: 'FindingEmitted' })
+  const findings = ctx.store.events({ type: 'FindingEmitted' })
     .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted') // union daraltma (strict tsc — generateEvolutionCandidates ile aynı desen)
     .filter((e) => !signalExcluded(e.run_id));
   const byFinding = new Map<string, string>(findings.map((e) => [e.event_id, e.payload.finding.category]));
-  const decisions = ctx.store.query({ type: 'HumanDecision' }).filter((e) => !signalExcluded(e.run_id));
+  const decisions = ctx.store.events({ type: 'HumanDecision' }).filter((e) => !signalExcluded(e.run_id));
   const buckets = new Map<string, string[]>();
   for (const d of decisions) {
     if (d.type !== 'HumanDecision') continue;

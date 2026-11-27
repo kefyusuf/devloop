@@ -7,7 +7,7 @@ import { GoldenTaskSchema } from '../eval/golden.js';
 import type { DevloopEvent } from '../contracts/events.js';
 import { canonicalJson } from '../util/canonicalJson.js'; // R26d: hash seed key-order duyarlılığı kapanır
 
-// store.query() dönüş tipi daraltılmaz (payload union kalır) — cli.ts'teki EvalRunEvent deseni
+// store.events() dönüş tipi daraltılmaz (payload union kalır) — cli.ts'teki EvalRunEvent deseni
 // ile Extract + type-predicate filtresi kullanılır (bkz. src/shell/cli.ts evalRunToSummary).
 type TaskPickedEvent = Extract<DevloopEvent, { type: 'TaskPicked' }>;
 type ArtifactProducedEvent = Extract<DevloopEvent, { type: 'ArtifactProduced' }>;
@@ -16,10 +16,10 @@ type FindingEmittedEvent = Extract<DevloopEvent, { type: 'FindingEmitted' }>;
 type HumanDecisionEvent = Extract<DevloopEvent, { type: 'HumanDecision' }>;
 
 export function acceptedRuns(store: VerdictStore, fromRun?: string): string[] {
-  const accepted = new Set(store.query({ type: 'HumanDecision' })
+  const accepted = new Set(store.events({ type: 'HumanDecision' })
     .filter((e): e is HumanDecisionEvent => e.type === 'HumanDecision' && e.payload.decision === 'accept')
     .map((e) => e.run_id));
-  const prd = new Set(store.query({ type: 'PRCreated' }).map((e) => e.run_id));
+  const prd = new Set(store.events({ type: 'PRCreated' }).map((e) => e.run_id));
   return [...accepted].filter((r) => prd.has(r) && (fromRun === undefined || r === fromRun));
 }
 
@@ -35,14 +35,14 @@ export async function generateGoldenDrafts(args: {
     // düzeyinde arıyor ve HumanDecision'ları TÜM run'dan tek taslağa yansıtıyordu: çok-görevli
     // kabul koşumunda 2..N görevler taslaksız kalıyor, task 2'nin false-positive reddi task 1'in
     // forbiddenCategories'ine düşüyordu. Her görevin expected'i YALNIZ kendi kararlarından türer.
-    const picks = args.store.query({ runId, type: 'TaskPicked' }).filter((e): e is TaskPickedEvent => e.type === 'TaskPicked');
+    const picks = args.store.events({ runId, type: 'TaskPicked' }).filter((e): e is TaskPickedEvent => e.type === 'TaskPicked');
     for (const picked of picks) {
       const taskId = picked.task_id;
-      const art = args.store.query({ runId, taskId, type: 'ArtifactProduced' }).find((e): e is ArtifactProducedEvent => e.type === 'ArtifactProduced');
-      const pr = args.store.query({ runId, taskId, type: 'PRCreated' }).find((e): e is PRCreatedEvent => e.type === 'PRCreated');
+      const art = args.store.events({ runId, taskId, type: 'ArtifactProduced' }).find((e): e is ArtifactProducedEvent => e.type === 'ArtifactProduced');
+      const pr = args.store.events({ runId, taskId, type: 'PRCreated' }).find((e): e is PRCreatedEvent => e.type === 'PRCreated');
       if (!art || !pr) { skipped++; continue; }
-      const decisions = args.store.query({ runId, taskId, type: 'HumanDecision' }).filter((e): e is HumanDecisionEvent => e.type === 'HumanDecision');
-      const byFinding = new Map(args.store.query({ runId, taskId, type: 'FindingEmitted' })
+      const decisions = args.store.events({ runId, taskId, type: 'HumanDecision' }).filter((e): e is HumanDecisionEvent => e.type === 'HumanDecision');
+      const byFinding = new Map(args.store.events({ runId, taskId, type: 'FindingEmitted' })
         .filter((e): e is FindingEmittedEvent => e.type === 'FindingEmitted')
         .map((e) => [e.event_id, e.payload.finding]));
       const required = new Set<string>();

@@ -110,7 +110,7 @@ describe('E2E golden koşu (A6 değişmezleri)', () => {
     await store.append('TaskPicked', 'run-x', 'task-1', 'o', { taskSpec: { id: 'task-1', description: 'd', acceptanceCriteria: ['a'], filesScope: [] } });
     const summary = await new Orchestrator(deps(repo, store)).run(join(repo, 'tasks.json'));
     expect(summary.prs).toHaveLength(1);
-    expect(store.query({ type: 'PRCreated', taskId: 'task-1' })).toHaveLength(1);
+    expect(store.events({ type: 'PRCreated', taskId: 'task-1' })).toHaveLength(1);
   });
 
   it('kill marker: .devloop/STOP → RunAborted(kill), PR yok', async () => {

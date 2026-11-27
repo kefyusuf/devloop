@@ -24,7 +24,7 @@ export class LessonMemory implements LessonsProvider {
 
   private latest(): Map<string, Lesson> {
     const map = new Map<string, Lesson>();
-    for (const ev of this.store.query({ type: 'LessonLearned' })) {
+    for (const ev of this.store.events({ type: 'LessonLearned' })) {
       if (ev.type !== 'LessonLearned') continue; // union daraltma (strict tsc: payload.lessonId yoksa erişilemez)
       map.set(ev.payload.lessonId, ev.payload);
     }

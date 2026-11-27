@@ -134,7 +134,7 @@ describe('golden draft', () => {
       { type: 'HumanDecision', run_id: runId, task_id: 't1', payload: { decision: 'accept', reason: 'real-issue-accepted', parentFindingEventIds: [] } },
     ]);
     const fakeStore = (events: { type: string; run_id: string; task_id: string }[]) => ({
-      query: (f: { runId?: string; taskId?: string; type?: string }) =>
+      events: (f: { runId?: string; taskId?: string; type?: string }) =>
         events.filter((e) =>
           (f.type === undefined || e.type === f.type) &&
           (f.runId === undefined || e.run_id === f.runId) &&

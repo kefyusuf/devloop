@@ -102,8 +102,8 @@ describe('Orchestrator', () => {
     expect(summary.blocked).toEqual(['t1']);
     expect(summary.prs).toHaveLength(0);
     expect(backend.generate).toHaveBeenCalledTimes(policy.maxFixTours);
-    expect(store.query({ type: 'TaskBlocked' })).toHaveLength(1);
-    expect(store.query({ type: 'PRCreated' })).toHaveLength(0);
+    expect(store.events({ type: 'TaskBlocked' })).toHaveLength(1);
+    expect(store.events({ type: 'PRCreated' })).toHaveLength(0);
   });
 
   it('bütçe: gerçek usage toplamı aşılınca RunAborted(budget), kalan görev PR almaz', async () => {
@@ -151,7 +151,7 @@ describe('Orchestrator', () => {
     const aborted = queryTyped(store, { type: 'RunAborted' });
     expect(aborted).toHaveLength(1);
     expect(aborted[0].payload.reason).toBe('panic');
-    expect(store.query({ type: 'TaskBlocked' })).toHaveLength(0);
+    expect(store.events({ type: 'TaskBlocked' })).toHaveLength(0);
     expect(backend.generate).toHaveBeenCalledTimes(1); // t2 işaretlenmedi → resume'da yeniden denenir
   });
 

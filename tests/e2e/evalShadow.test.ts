@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Finding } from '../../src/contracts/schemas.js';
 import type { DevloopEvent } from '../../src/contracts/events.js';
+import { AWS_DOC_EXAMPLE } from '../helpers/secrets.js';
 
 // R15 (faz 3 T9): eval/shadow E2E — R9 kabul kriterlerinin uçtan uca kanıtı.
 //
@@ -96,7 +97,7 @@ const GOLDEN = [
   {
     goldenId: 'g3',
     taskSpec: { id: 'gt3', description: 'AWS örnek anahtarı içeren diff', acceptanceCriteria: ['a3'], filesScope: [] },
-    fixtureDiff: '--- a/src/k.ts\n+++ b/src/k.ts\n@@ -1 +1,2 @@\n const x=1;\n+const k = "AKIAIOSFODNN7EXAMPLE";',
+    fixtureDiff: `--- a/src/k.ts\n+++ b/src/k.ts\n@@ -1 +1,2 @@\n const x=1;\n+const k = "${AWS_DOC_EXAMPLE}";`,
     expected: { gatesPass: true, requiredFindings: [], forbiddenCategories: [] },
   },
 ];
@@ -110,7 +111,7 @@ function makeFixtureRepo(): string {
 }
 
 function evalRunEvents(store: VerdictStore): Extract<DevloopEvent, { type: 'EvalRun' }>[] {
-  return store.query({ type: 'EvalRun' }).filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun');
+  return store.events({ type: 'EvalRun' }).filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun');
 }
 
 describe('E2E eval + shadow (R9 — faz 3 T9)', () => {
@@ -158,7 +159,7 @@ describe('E2E eval + shadow (R9 — faz 3 T9)', () => {
 
     // (4) DETERMİNİSTİK kanıt: koşumdaki tüm bulgular deterministik gate stage'lerinden —
     // llm-reviewer/llm-ensemble adlı stage'den FindingEmitted YOK; StageVerdict'ler de eval-aggregate.
-    const findings = store.query({ type: 'FindingEmitted' })
+    const findings = store.events({ type: 'FindingEmitted' })
       .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted');
     expect(findings.length).toBeGreaterThanOrEqual(3); // g2 test-diff (×2 koşum) + g3 secret (üretim) — boş olamaz
     for (const f of findings) {

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { StaticGatesStage } from '../../src/pipeline/stages/staticGates.js';
 import { TestGateStage } from '../../src/pipeline/stages/testGate.js';
 import { SecretScanStage } from '../../src/pipeline/stages/secretScan.js';
+import { AWS_DOC_EXAMPLE, LOWERCASE_FIXTURE } from '../helpers/secrets.js';
 import { TypeScriptAdapter, resolveBin, classifyRejection, evaluateTestResult, evaluateStaticTool } from '../../src/adapters/typescript/index.js';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,12 +46,12 @@ describe('deterministik stage\'ler', () => {
     expect((await new TestGateStage(failingAdapter).evaluate(ctx())).status).toBe('fail');
   });
   it('secret-scan: geçerli regex, AWS key → critical fail', async () => {
-    const r = await new SecretScanStage().evaluate(ctx('const k = "AKIAIOSFODNN7EXAMPLE";', [{ path: 'src/k.ts', content: 'x' }]));
+    const r = await new SecretScanStage().evaluate(ctx(`const k = "${AWS_DOC_EXAMPLE}";`, [{ path: 'src/k.ts', content: 'x' }]));
     expect(r.status).toBe('fail');
     expect(r.findings[0].severity).toBe('critical');
   });
   it('secret-scan: lowercase secret (i flag ile) yakalanır', async () => {
-    const r = await new SecretScanStage().evaluate(ctx('api_key = "abcdef1234567890abcdef12"', [{ path: 'src/k.ts', content: 'x' }]));
+    const r = await new SecretScanStage().evaluate(ctx(`api_key = "${LOWERCASE_FIXTURE}"`, [{ path: 'src/k.ts', content: 'x' }]));
     expect(r.status).toBe('fail');
   });
 });

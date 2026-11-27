@@ -77,8 +77,8 @@ export async function runEval(args: {
   const failed = perTask.length - passed;
   const score = perTask.length === 0 ? 0 : Math.round((passed / perTask.length) * 1000) / 10;
   const l3Active = tasks.length >= args.l3MinGoldenTasks;
-  // query tip daraltmaz (farklı payload union'ı) — EvalRun payload'una tip guard ile daraltılır
-  const prevRuns = args.store.query({ type: 'EvalRun' }).filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun')
+  // events() tip daraltmaz (farklı payload union'ı) — EvalRun payload'una tip guard ile daraltılır
+  const prevRuns = args.store.events({ type: 'EvalRun' }).filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun')
     .filter((e) => !('candidate' in e.payload.configSnapshot))
     // R35 (faz 7 T1): repo-scope — aday koşumu yalnız AYNI reponun en son production koşumuyla
     // karşılaştırılır (payload.repo optional: tanımsız↔tanımsız eşleşir — tek-repo davranış

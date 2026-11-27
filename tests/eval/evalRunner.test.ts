@@ -63,7 +63,7 @@ describe('runEval', () => {
     expect(r.passed).toBe(1);
     expect(r.score).toBe(100);
     expect(r.l3Active).toBe(false); // 1 < 50
-    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    // hüküm: tsconfig.test kapsamı — events() payload union döndürür; queryTyped ile daraltılır
     const ev = queryTyped(store, { type: 'EvalRun' })[0];
     expect(ev.payload.score).toBe(100);
     expect(validateChain(store.readAll()).ok).toBe(true);
@@ -93,7 +93,7 @@ describe('runEval', () => {
     const r = await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
     expect(r.goldenCount).toBe(1); // yalnız GEÇERLİ görev koşar
     expect(r.invalid).toEqual(['bad.task.json']);
-    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    // hüküm: tsconfig.test kapsamı — events() payload union döndürür; queryTyped ile daraltılır
     const ev = queryTyped(store, { type: 'EvalRun' })[0];
     expect(ev.payload.invalid).toEqual(['bad.task.json']); // kanıt zincirinde de taşınır
     expect(validateChain(store.readAll()).ok).toBe(true);
@@ -103,7 +103,7 @@ describe('runEval', () => {
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     const r = await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
     expect(r.invalid).toEqual([]);
-    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    // hüküm: tsconfig.test kapsamı — events() payload union döndürür; queryTyped ile daraltılır
     expect(queryTyped(store, { type: 'EvalRun' })[0].payload.invalid).toEqual([]);
   });
 
@@ -125,7 +125,7 @@ describe('runEval', () => {
       nowSpy.mockRestore();
     }
     expect(r1.evalId).not.toBe(r2.evalId);
-    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    // hüküm: tsconfig.test kapsamı — events() payload union döndürür; queryTyped ile daraltılır
     const ids = queryTyped(store, { type: 'EvalRun' }).map((e) => e.payload.evalId);
     expect(new Set(ids).size).toBe(2); // kanıtta da çarpışma yok
   });
@@ -155,7 +155,7 @@ describe('runEval', () => {
     const dir = makeRepo([GOLDEN]);
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks, repo: 'fixture-a' });
-    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    // hüküm: tsconfig.test kapsamı — events() payload union döndürür; queryTyped ile daraltılır
     const evs = queryTyped(store, { type: 'EvalRun' });
     expect(evs).toHaveLength(1);
     expect(evs[0].payload.repo).toBe('fixture-a');
@@ -164,7 +164,7 @@ describe('runEval', () => {
     const dir = makeRepo([GOLDEN]);
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
-    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    // hüküm: tsconfig.test kapsamı — events() payload union döndürür; queryTyped ile daraltılır
     expect(queryTyped(store, { type: 'EvalRun' })[0].payload.repo).toBeUndefined();
   });
 
@@ -200,7 +200,7 @@ describe('runEval', () => {
     const dir = makeRepo([GOLDEN]);
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks, multiEvalId: 'multi-1' });
-    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    // hüküm: tsconfig.test kapsamı — events() payload union döndürür; queryTyped ile daraltılır
     const evs = queryTyped(store, { type: 'EvalRun' });
     expect(evs).toHaveLength(1);
     expect(evs[0].payload.multiEvalId).toBe('multi-1');
@@ -209,7 +209,7 @@ describe('runEval', () => {
     const dir = makeRepo([GOLDEN]);
     const store = new VerdictStore(join(dir, '.devloop', 'events.jsonl'));
     await runEval({ repoPath: dir, pipeline: passPipeline(), policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
-    // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
+    // hüküm: tsconfig.test kapsamı — events() payload union döndürür; queryTyped ile daraltılır
     expect(queryTyped(store, { type: 'EvalRun' })[0].payload.multiEvalId).toBeUndefined();
   });
 });

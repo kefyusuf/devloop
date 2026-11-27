@@ -122,7 +122,7 @@ export async function runReviewDiff(args: {
   // R15 hüküm (faz 3 T9): kanıt SEÇİM sonrası yazılır — configSnapshot.gates = SEÇİLEN pipeline'ın
   // etkin stage kümesi (chosen.stageNames()); low-risk koşumda llm-ensemble YOK, high-risk'te VAR.
   // Koşumun ilk store event'i olma özelliği korunur (RunStarted → TaskPicked → …).
-  if (args.store.query({ runId, type: 'RunStarted' }).length === 0) {
+  if (args.store.events({ runId, type: 'RunStarted' }).length === 0) {
     // hüküm: R31 policyHash canonicalJson seed — hash DEĞERLERİ değişimi bilinçli (policy
     // çok-anahtarlı); key-order determinizmi kazanılır.
     const policyHash = createHash('sha256').update(canonicalJson(args.policy)).digest('hex').slice(0, 16);

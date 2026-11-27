@@ -54,7 +54,7 @@ export class VerdictStore {
     return out;
   }
 
-  query(f: { runId?: string; taskId?: string; type?: EventType }): DevloopEvent[] {
+  events(f: { runId?: string; taskId?: string; type?: EventType }): DevloopEvent[] {
     return this.readAll().filter((e) =>
       (f.runId === undefined || e.run_id === f.runId) &&
       (f.taskId === undefined || e.task_id === f.taskId) &&

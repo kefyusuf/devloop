@@ -9,6 +9,7 @@ import { LlmEnsembleStage } from '../../src/pipeline/stages/llmEnsemble.js';
 import { SecretScanStage } from '../../src/pipeline/stages/secretScan.js';
 import { MutationStage } from '../../src/pipeline/stages/mutationStage.js';
 import { parseDiff, runReviewDiff } from '../../src/shell/reviewDiff.js';
+import { AWS_DOC_EXAMPLE } from '../helpers/secrets.js';
 import { runEval, type EvalSummary } from '../../src/eval/evalRunner.js';
 import { generateEvolutionCandidates, applyEvolution, generateLlmMutations, type EvolveContext } from '../../src/evolution/evolve.js';
 import { loadConfig, type Policy } from '../../src/config/config.js';
@@ -146,7 +147,7 @@ describe('Faz 2 değişmezleri (R7)', () => {
     // Staging dışına taşma yok: proposalsDir'in tek girdisi <proposalId>/; içinde yalnız PROPOSAL.md.
     expect(readdirSync(proposalsDir)).toEqual([p.proposalId]);
     expect(readdirSync(join(proposalsDir, p.proposalId))).toEqual(['PROPOSAL.md']);
-    expect(store.query({ type: 'ProposalCreated' })).toHaveLength(1);
+    expect(store.events({ type: 'ProposalCreated' })).toHaveLength(1);
   });
 
   it('koraborasyon değişmezi (tam ensemble, eşik altı): tek reviewer → false; iki reviewer aynı anahtar → true', async () => {
@@ -212,8 +213,9 @@ describe('Faz 3 değişmezleri (R15)', () => {
   const GATES5 = ['risk-triage', 'static-gates', 'tests', 'secret-scan', 'mutation-testing'];
   const CLEAN_DIFF = '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n const x=1;\n+const y=2;';
   const TESTFILE_DIFF = '--- a/tests/u.test.ts\n+++ b/tests/u.test.ts\n@@ -1 +1,2 @@\n const a=1;\n+const b=2;';
-  // AWS belgeleme örnek anahtarı — SecretScanStage PATTERNS[0] birebir eşleşir (gerçekçi gate fail).
-  const SECRET_DIFF = '--- a/src/k.ts\n+++ b/src/k.ts\n@@ -1 +1,2 @@\n const x=1;\n+const k = "AKIAIOSFODNN7EXAMPLE";';
+  // AWS belgeleme örnek değeri — SecretScanStage PATTERNS[0] birebir eşleşir (gerçekçi gate fail);
+  // statik taramaya takılmaması için helpers/secrets.ts'te parçalı kurulur.
+  const SECRET_DIFF = `--- a/src/k.ts\n+++ b/src/k.ts\n@@ -1 +1,2 @@\n const x=1;\n+const k = "${AWS_DOC_EXAMPLE}";`;
   const fakeGate = (name: string): ReviewStage => ({ name, kind: 'gate', evaluate: async (): Promise<StageResult> => ({ status: 'pass', findings: [], durationMs: 1 }) });
   const goldenFile = (repo: string, t: { goldenId: string; fixtureDiff: string; expected: unknown; id: string }): void =>
     writeFileSync(join(repo, '.devloop', 'golden', `${t.goldenId}.task.json`), JSON.stringify({
@@ -286,7 +288,7 @@ describe('Faz 3 değişmezleri (R15)', () => {
     // A5: kapı throw'u TÜM yazımlardan ÖNCE — staging dosyası da dizin de yok; kanıt event'i de yok.
     expect(existsSync(ctx.playbookDir)).toBe(false);
     expect(existsSync(join(ctx.playbookDir, `${candidates[0].evoId}.json`))).toBe(false);
-    expect(store.query({ type: 'ProposalCreated' })).toHaveLength(0);
+    expect(store.events({ type: 'ProposalCreated' })).toHaveLength(0);
     expect(validateChain(store.readAll()).ok).toBe(true);
   });
 
@@ -309,7 +311,7 @@ describe('Faz 3 değişmezleri (R15)', () => {
     const r = await runEval({ repoPath: repo, pipeline, policy, store, l3MinGoldenTasks: policy.l3MinGoldenTasks });
     expect(r.score).toBe(100); // expected gatesPass=false, gerçek mutation fail → eşleşir
 
-    const emitted = store.query({ type: 'FindingEmitted' })
+    const emitted = store.events({ type: 'FindingEmitted' })
       .filter((e): e is Extract<DevloopEvent, { type: 'FindingEmitted' }> => e.type === 'FindingEmitted');
     const mut = emitted.filter((e) => e.payload.finding.category === 'mutation');
     expect(mut).toHaveLength(1);
@@ -368,7 +370,7 @@ describe('Faz 3 değişmezleri (R15)', () => {
     const low = await runReviewDiff({ diffText: LOW, taskSpecId: 'low', gatePipeline: lowPipes.gate, fullPipeline: lowPipes.full, store, policy: base, repoPath: dir });
     expect(low.exitCode).toBe(0);
     expect(ensCalls).toBe(0);
-    const snapLow = (store.query({ runId: 'ci-low', type: 'RunStarted' })[0] as Extract<DevloopEvent, { type: 'RunStarted' }>).payload.configSnapshot;
+    const snapLow = (store.events({ runId: 'ci-low', type: 'RunStarted' })[0] as Extract<DevloopEvent, { type: 'RunStarted' }>).payload.configSnapshot;
     expect(snapLow.gates).toEqual(GATES5); // llm-ensemble YOK — low-risk koşum LLM harcamaz
 
     // BOUNDARY: 20 < 20 DEĞİL → full pipeline; ensemble tam 1 kez; snapshot gates'te llm-ensemble VAR.
@@ -377,7 +379,7 @@ describe('Faz 3 değişmezleri (R15)', () => {
     const high = await runReviewDiff({ diffText: BOUNDARY, taskSpecId: 'high', gatePipeline: highPipes.gate, fullPipeline: highPipes.full, store, policy: base, repoPath: dir });
     expect(high.exitCode).toBe(0);
     expect(ensCalls).toBe(1); // eşikteki koşum DERİN — `<` karşılaştırması pin'li (20 dahil değil)
-    const snapHigh = (store.query({ runId: 'ci-high', type: 'RunStarted' })[0] as Extract<DevloopEvent, { type: 'RunStarted' }>).payload.configSnapshot;
+    const snapHigh = (store.events({ runId: 'ci-high', type: 'RunStarted' })[0] as Extract<DevloopEvent, { type: 'RunStarted' }>).payload.configSnapshot;
     expect(snapHigh.gates).toEqual([...GATES5, 'llm-ensemble']); // seçilen pipeline birebir kanıtta
     expect(validateChain(store.readAll()).ok).toBe(true);
   });
@@ -477,7 +479,7 @@ describe('Faz 4 değişmezleri (R23)', () => {
     try { r1 = await runEval(args); r2 = await runEval(args); }
     finally { nowSpy.mockRestore(); }
     expect(r1.evalId).not.toBe(r2.evalId);
-    const ids = store.query({ type: 'EvalRun' })
+    const ids = store.events({ type: 'EvalRun' })
       .filter((e): e is Extract<DevloopEvent, { type: 'EvalRun' }> => e.type === 'EvalRun')
       .map((e) => e.payload.evalId);
     expect(new Set(ids).size).toBe(2); // kanıtta da çarpışma yok

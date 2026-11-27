@@ -109,7 +109,7 @@ describe('E2E golden veri yolu (R23)', () => {
     expect(summary.configSnapshot).toMatchObject({ mode: 'production' });
     expect(summary.l3Active).toBe(false); // 1 görev < l3MinGoldenTasks (50) — L3 veri yolu eşiği
 
-    const evalRuns = store.query({ type: 'EvalRun' }).filter((e): e is EvalRunEvent => e.type === 'EvalRun');
+    const evalRuns = store.events({ type: 'EvalRun' }).filter((e): e is EvalRunEvent => e.type === 'EvalRun');
     expect(evalRuns).toHaveLength(1);
     expect(evalRuns[0]?.payload.score).toBe(100);
     expect(evalRuns[0]?.payload.configSnapshot).toMatchObject({ mode: 'production' });
@@ -117,7 +117,7 @@ describe('E2E golden veri yolu (R23)', () => {
 
     // eval kanıt zinciri: golden koşum runEval ile TaskPicked/ArtifactProduced/StageVerdict('eval')
     // yazar — gates-only gerçek koşumda görev verdict'i 'pass' (skip yalnız mutation-testing).
-    const verdicts = store.query({ type: 'StageVerdict' })
+    const verdicts = store.events({ type: 'StageVerdict' })
       .filter((e): e is StageVerdictEvent => e.type === 'StageVerdict')
       .filter((e) => e.run_id === `eval-${summary.evalId}`);
     expect(verdicts).toHaveLength(1);

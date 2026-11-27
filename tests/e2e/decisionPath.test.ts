@@ -59,7 +59,7 @@ describe('E2E decide → gerçek run veri yolu (R25)', () => {
     // 1. decide CLI — auto-resolve (--run YOK): HumanDecision run_id GERÇEK koşum runId'sidir
     // (faz 4'e kadar her zaman 'manual' yazılıyordu — R25 ile gerçek zincir bağlanır).
     await runCli(repo, ['decide', '--task', 't1', '--accept', '--reason', 'real-issue-accepted']);
-    const decisions = store.query({ type: 'HumanDecision' })
+    const decisions = store.events({ type: 'HumanDecision' })
       .filter((e): e is HumanDecisionEvent => e.type === 'HumanDecision');
     expect(decisions).toHaveLength(1);
     expect(decisions[0].run_id).toBe('run-r25'); // son TaskPicked'in run_id'si
@@ -114,7 +114,7 @@ describe('E2E decide → gerçek run veri yolu (R25)', () => {
     // 5. Zincir bütünlüğü: BÜTÜN store (seed + decide + eval kanıtı) validateChain ok; HumanDecision
     // run_id hâlâ gerçek koşum runId'si (eval koşumu store'a ek event yazsa da karar bağlantısı bozulmaz).
     expect(validateChain(store.readAll()).ok).toBe(true);
-    expect(store.query({ type: 'HumanDecision' })
+    expect(store.events({ type: 'HumanDecision' })
       .filter((e): e is HumanDecisionEvent => e.type === 'HumanDecision')[0]?.run_id).toBe('run-r25');
   }, 180_000);
 });

@@ -13,9 +13,9 @@ export interface CandidateLesson {
 
 /** v1 deterministik aday üretimi (spec §6 faz 1). lessonId = sha256(pattern + sıralı karar IDs) — karar seti değişmedikçe sabit. */
 export function generateCandidates(store: VerdictStore): CandidateLesson[] {
-  const decisions = store.query({ type: 'HumanDecision' });
+  const decisions = store.events({ type: 'HumanDecision' });
   const byFinding = new Map<string, string>();
-  for (const e of store.query({ type: 'FindingEmitted' })) {
+  for (const e of store.events({ type: 'FindingEmitted' })) {
     if (e.type !== 'FindingEmitted') continue; // union daraltma (strict tsc — memory.ts ile aynı desen)
     byFinding.set(e.event_id, e.payload.finding.category);
   }
@@ -52,7 +52,7 @@ export function generateCandidates(store: VerdictStore): CandidateLesson[] {
   // olduğundan aynı karar seti tombstone yazıldıktan sonra da AYNI ID'yi üretir; LessonMemory ile
   // aynı projeksiyon (lessonId başına SON status kazanır) üzerinden retired kümesi filtreler.
   const latestLesson = new Map<string, EventPayloadMap['LessonLearned']>();
-  for (const ev of store.query({ type: 'LessonLearned' })) {
+  for (const ev of store.events({ type: 'LessonLearned' })) {
     if (ev.type !== 'LessonLearned') continue; // union daraltma (strict tsc)
     latestLesson.set(ev.payload.lessonId, ev.payload);
   }
@@ -77,15 +77,15 @@ export interface Proposal {
 }
 
 export function generateProposals(store: VerdictStore, l2MinDecisions: number): Proposal[] {
-  const decisions = store.query({ type: 'HumanDecision' });
+  const decisions = store.events({ type: 'HumanDecision' });
   if (decisions.length < l2MinDecisions) return [];
   const applied = new Set<string>();
-  for (const e of store.query({ type: 'ProposalCreated' })) {
+  for (const e of store.events({ type: 'ProposalCreated' })) {
     if (e.type !== 'ProposalCreated') continue; // union daraltma (strict tsc — memory.ts ile aynı desen)
     applied.add(e.payload.proposalId);
   }
   const byFinding = new Map<string, string>();
-  for (const e of store.query({ type: 'FindingEmitted' })) {
+  for (const e of store.events({ type: 'FindingEmitted' })) {
     if (e.type !== 'FindingEmitted') continue; // union daraltma (strict tsc)
     byFinding.set(e.event_id, e.payload.finding.category);
   }

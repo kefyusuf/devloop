@@ -4,6 +4,7 @@ import { buildCli } from '../../src/shell/cli.js';
 import { ReviewPipeline } from '../../src/pipeline/pipeline.js';
 import { VerdictStore, validateChain } from '../../src/store/store.js';
 import { loadConfig } from '../../src/config/config.js';
+import { AWS_DOC_EXAMPLE } from '../helpers/secrets.js';
 import { computeRisk } from '../../src/pipeline/stages/riskTriage.js';
 import type { ReviewStage } from '../../src/contracts/review.js';
 import type { Finding } from '../../src/contracts/schemas.js';
@@ -213,7 +214,7 @@ describe('review-diff exit kodları', () => {
     // llm-ensemble OLMAMASI değişmezi tests/e2e/invariants.test.ts'te pinlenir.
     expect(snap.gates).toEqual(ciPolicy.gates);
     // event zinciri: RunStarted → TaskPicked → ArtifactProduced → StageVerdict/RiskScored; runId ci-<task>
-    expect(store.query({ runId: 'ci-t1', type: 'TaskPicked' }).length).toBe(1);
+    expect(store.events({ runId: 'ci-t1', type: 'TaskPicked' }).length).toBe(1);
     // hüküm: tsconfig.test kapsamı — query payload union döndürür; queryTyped ile daraltılır
     const art = queryTyped(store, { runId: 'ci-t1', type: 'ArtifactProduced' })[0];
     const verdict = queryTyped(store, { runId: 'ci-t1', type: 'StageVerdict' })[0];
@@ -230,14 +231,14 @@ describe('review-diff exit kodları', () => {
       fullPipeline: new ReviewPipeline([stage('risk-triage', 'gate', 'pass')], ciPolicy),
       store, policy: ciPolicy, repoPath: dir,
     });
-    expect(store.query({ runId: 'ci-t1', type: 'RunStarted' })).toHaveLength(1);
+    expect(store.events({ runId: 'ci-t1', type: 'RunStarted' })).toHaveLength(1);
   });
   it('gate fail → exit 1', async () => {
     const { result, store } = await runWith([stage('risk-triage', 'gate', 'fail', [F('f1', 'required', 'risk-triage')])]);
     expect(result.exitCode).toBe(1);
     expect(result.gateFailed).toBe('risk-triage');
     // gate bulguları da kanıta yazılır
-    expect(store.query({ runId: 'ci-t1', type: 'FindingEmitted' }).length).toBe(1);
+    expect(store.events({ runId: 'ci-t1', type: 'FindingEmitted' }).length).toBe(1);
   });
   it('advisory bulgu → exit 2', async () => {
     const { result, store } = await runWith(
@@ -245,7 +246,7 @@ describe('review-diff exit kodları', () => {
     expect(result.exitCode).toBe(2);
     expect(result.gateFailed).toBeNull();
     expect(result.findings.map((f) => f.severity)).toEqual(['required']);
-    expect(store.query({ runId: 'ci-t1', type: 'FindingEmitted' }).length).toBe(1);
+    expect(store.events({ runId: 'ci-t1', type: 'FindingEmitted' }).length).toBe(1);
   });
   it('critical bulgu (gate pass) → exit 1', async () => {
     const { result } = await runWith(
@@ -381,7 +382,7 @@ llm: { provider: anthropic, model: m1, fallbackModel: m2, maxTokens: 1024, costP
   it('exit 1: sır içeren diff → secret-scan gate fail → process.exitCode "1"', async () => {
     // R26b hüküm: gateway kurulumu 0-ayakta fail-closed → sahte anahtar ile 1 ayak kurulur
     // (fetch stub 401: ensemble girilse bile fail-fast; secret-scan gate zaten exit 1 verir).
-    const dir = tmpRepo(['risk-triage', 'secret-scan'], DIFF + "\n+const K = 'AKIAIOSFODNN7EXAMPLE';\n");
+    const dir = tmpRepo(['risk-triage', 'secret-scan'], DIFF + `\n+const K = '${AWS_DOC_EXAMPLE}';\n`);
     const prevKey = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'k-dummy';
     const prevFetch = globalThis.fetch;

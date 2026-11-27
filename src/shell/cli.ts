@@ -47,7 +47,7 @@ function evalRunToSummary(p: EventPayloadMap['EvalRun'], l3MinGoldenTasks: numbe
 // Son production eval = configSnapshot'ta 'candidate' OLMAYAN son EvalRun (evalRunner ile aynı kural);
 // shadow eval = candidate='evolve-shadow' etiketli son EvalRun.
 function lastEvalRun(s: VerdictStore, kind: 'production' | 'shadow'): EvalRunEvent | undefined {
-  const runs = s.query({ type: 'EvalRun' }).filter((e): e is EvalRunEvent => e.type === 'EvalRun');
+  const runs = s.events({ type: 'EvalRun' }).filter((e): e is EvalRunEvent => e.type === 'EvalRun');
   const filtered = runs.filter((e) => kind === 'production'
     ? !('candidate' in e.payload.configSnapshot)
     : e.payload.configSnapshot['candidate'] === 'evolve-shadow');
@@ -63,7 +63,7 @@ function lastEvalRun(s: VerdictStore, kind: 'production' | 'shadow'): EvalRunEve
 // kural — configSnapshot'ta 'candidate' anahtarı olanlar); policyHash karşılaştırılmaz — eşik
 // golden VERİ hacmi hakkındadır (R37 spec).
 function latestMultiEvalTotal(s: VerdictStore): number {
-  const batched = s.query({ type: 'EvalRun' })
+  const batched = s.events({ type: 'EvalRun' })
     .filter((e): e is EvalRunEvent => e.type === 'EvalRun' && e.payload.multiEvalId !== undefined);
   if (batched.length === 0) return 0;
   const latestBatchId = batched[batched.length - 1].payload.multiEvalId;
@@ -99,7 +99,7 @@ export function resolveL3(s: VerdictStore, ownGoldenCount: number, policy: Polic
 // 'manual' sentinel'i BURAYA girmez: yalnız decide '--run manual' explicit yolu yazar.
 type TaskPickedEvent = Extract<DevloopEvent, { type: 'TaskPicked' }>;
 function resolveRunIdForTask(s: VerdictStore, taskId: string): string | null {
-  const picked = s.query({ type: 'TaskPicked' })
+  const picked = s.events({ type: 'TaskPicked' })
     .filter((e): e is TaskPickedEvent => e.type === 'TaskPicked' && e.payload.taskSpec.id === taskId)
     .pop();
   return picked ? picked.run_id : null;
@@ -200,7 +200,7 @@ export function buildCli(workDir = process.cwd()): Command {
     // kuralı: alan hep basılır). EvalSummary.l3Active DEĞİŞMEZ — o koşumun KENDİ setinin eşiğe
     // göre durumudur (per-run veri); status'taki değer kapı durumdur, iki anlam bilinçli ayrıdır.
     const l3 = resolveL3(s, goldenCount, policy);
-    console.log(`runs=${s.query({ type: 'RunStarted' }).length} prs=${s.query({ type: 'PRCreated' }).length} blocked=${s.query({ type: 'TaskBlocked' }).length} decisions=${s.query({ type: 'HumanDecision' }).length} lessons=${s.query({ type: 'LessonLearned' }).length} chain=${chain.ok ? 'ok' : 'BROKEN: ' + chain.errors.join('; ')} goldenCount=${goldenCount} goldenDrafts=${goldenDrafts} l3Active=${l3.active} l3Source=${l3.source} lastEvalScore=${lastEvalScore}`);
+    console.log(`runs=${s.events({ type: 'RunStarted' }).length} prs=${s.events({ type: 'PRCreated' }).length} blocked=${s.events({ type: 'TaskBlocked' }).length} decisions=${s.events({ type: 'HumanDecision' }).length} lessons=${s.events({ type: 'LessonLearned' }).length} chain=${chain.ok ? 'ok' : 'BROKEN: ' + chain.errors.join('; ')} goldenCount=${goldenCount} goldenDrafts=${goldenDrafts} l3Active=${l3.active} l3Source=${l3.source} lastEvalScore=${lastEvalScore}`);
   });
 
   const learn = program.command('learn').description('aday dersleri listele/onayla');
@@ -213,7 +213,7 @@ export function buildCli(workDir = process.cwd()): Command {
     // R14 (faz 3 T8): boş liste çıplak '(aday yok)' demez — karar sayısı L2 indüksiyon eşiğinin
     // (l2MinDecisions) altındaysa açık bildirim verir: kullanıcı L2'nin neden devre dışı olduğunu
     // ve ne kadar karar biriktiğini görür (SHIP kalıntısı: sessiz boş çıktı diagnoza kapalıydı).
-    const decisions = s.query({ type: 'HumanDecision' });
+    const decisions = s.events({ type: 'HumanDecision' });
     console.log(decisions.length < policy.l2MinDecisions
       ? `L2 devre dışı (l2MinDecisions=${policy.l2MinDecisions}, mevcut: ${decisions.length})`
       : '(aday yok)');
@@ -243,7 +243,7 @@ export function buildCli(workDir = process.cwd()): Command {
       console.log('Aday reddedildi (tombstone yazıldı).');
       return;
     }
-    const isActive = s.query({ type: 'LessonLearned' }).some((e) => e.type === 'LessonLearned' && e.payload.lessonId === lessonId && e.payload.status === 'active');
+    const isActive = s.events({ type: 'LessonLearned' }).some((e) => e.type === 'LessonLearned' && e.payload.lessonId === lessonId && e.payload.status === 'active');
     if (!isActive) throw new Error('Aday veya aktif ders bulunamadı');
     await mem.markRetired(lessonId, []);
     console.log('Retired.');
@@ -337,7 +337,7 @@ export function buildCli(workDir = process.cwd()): Command {
     .description('golden task eval — production pipeline veya aday policy karşılaştırması (shadow)')
     .option('--candidate <policyDir>', 'aday policy dizini (policy.yaml içerir)')
     .option('--full', 'ensemble dahil koş (LLM çağrısı yapar)')
-    .option('--repos <paths>', 'multi-repo eval (R30): virgülle ayrık hedef repo yolları — golden set agregasyonu')
+    .option('--repos <paths>', 'multi-repo eval, R30 kuralı: virgülle ayrık hedef repo yolları — golden set agregasyonu')
     .action(async (opts: { candidate?: string; full?: boolean; repos?: string }) => {
       // Fail-closed: candidate policy.yaml içermiyorsa loadConfig sessizce DEFAULT_POLICY'ye düşer —
       // farkında olmadan varsayılan policy'yle karşılaştırma yapmak R9 ölçümünü geçersiz kılar.
